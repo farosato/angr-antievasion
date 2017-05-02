@@ -3,8 +3,13 @@
 import angr
 import pafish_models
 
-CHECKS = [('cpu_rdtsc', 0x40472b, 0x4047d7), ('gensandbox_mouse_act', 0x4037ff, 0x403857),
-          ('gensandbox_sleep_patched', 0x403caa, 0x403ce9)]
+CHECKS = [('cpu_rdtsc', 0x40472b, 0x4047d7),
+          ('gensandbox_mouse_act', 0x4037ff, 0x403857),
+          ('gensandbox_sleep_patched', 0x403caa, 0x403ce9),
+          ('vmware_sysfile1', 0x403f3b, 0x403f4e),
+          ('vmware_sysfile2', 0x403f4f, 0x403f62),
+          ('vbox_sysfile1', 0x403104, 0x403209),
+          ('vbox_sysfile2', 0x40320a, 0x403373)]
 
 
 def test():

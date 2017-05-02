@@ -1,5 +1,4 @@
 import angr
-import claripy
 import simuvex
 import simuvex.engines.vex.dirty as vex_dirtyhelpers
 from simuvex.plugins.plugin import SimStatePlugin
@@ -7,6 +6,7 @@ from simuvex.plugins.plugin import SimStatePlugin
 from random import randint
 
 TICKS_PER_MS = 10000  # Windows TicksPerMillisecond = 10000
+VM_STRINGS = ['vm', 'vbox', 'virtualbox']
 
 
 # PLUGINS #
@@ -33,7 +33,7 @@ class SimStateParanoid(SimStatePlugin):
 def rdtsc_hook(state):
     # print "GOTCHA!"
     state.paranoid.tsc += 1  # increase it just to be on the safe side
-    return claripy.BVV(state.paranoid.tsc, 64), []
+    return state.se.BVV(state.paranoid.tsc, 64), []
 
 
 class Sleep(simuvex.SimProcedure):
@@ -86,14 +86,43 @@ class GetCursorPos(simuvex.SimProcedure):
 
         self.return_type = simuvex.s_type.SimTypeInt()
 
-        x = claripy.BVV(randint(0, 300), 32)
-        y = claripy.BVV(randint(0, 300), 32)
+        x = self.state.se.BVV(randint(0, 300), 32)
+        y = self.state.se.BVV(randint(0, 300), 32)
 
         self.state.memory.store(lpPoint, x)
         self.state.memory.store(lpPoint+4, y)
 
         ret_expr = 1
         # print "GetCursorPos: " + str(lpPoint) + " " + "=> " + str(ret_expr)
+        return ret_expr
+
+
+class GetFileAttributes(simuvex.SimProcedure):
+    def execute(self, state, successors=None, arguments=None, ret_to=None):
+        super(GetFileAttributes, self).execute(state, successors, arguments, ret_to)
+        state.regs.esp += 4 * 1
+
+    def run(self, lpFileName):
+        self.argument_types = {
+            0: self.ty_ptr(simuvex.s_type.SimTypeString()),
+        }
+
+        self.return_type = simuvex.s_type.SimTypeInt()
+
+        file_name = self.state.mem[lpFileName.args[0]].string.concrete
+
+        print file_name
+
+        vm_related = any(vm_str in file_name.lower() for vm_str in VM_STRINGS)
+
+        print 'VM related: {}'.format(vm_related)
+
+        if vm_related:
+            ret_expr = -1  # INVALID_FILE_ATTRIBUTES
+        else:
+            ret_expr = self.state.se.Unconstrained("unconstrained_ret_GetFileAttributes", 32)
+
+        print "GetFileAttributes: " + str(lpFileName) + " " + "=> " + str(ret_expr)
         return ret_expr
 
 
@@ -109,3 +138,4 @@ def hook_all(proj):
     proj.hook_symbol("GetTickCount", angr.Hook(GetTickCount))
     proj.hook_symbol("Sleep", angr.Hook(Sleep))
     proj.hook_symbol("GetCursorPos", angr.Hook(GetCursorPos))
+    proj.hook_symbol("GetFileAttributesA", angr.Hook(GetFileAttributes))
