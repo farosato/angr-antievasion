@@ -7,6 +7,7 @@ from random import randint
 
 TICKS_PER_MS = 10000  # Windows TicksPerMillisecond = 10000
 VM_STRINGS = ['vm', 'vbox', 'virtualbox']
+API_HOOK_CHECKS = ['DeleteFileW', 'ShellExecuteExW', 'CreateProcessA']
 
 
 # PLUGINS #
@@ -111,18 +112,17 @@ class GetFileAttributes(simuvex.SimProcedure):
 
         file_name = self.state.mem[lpFileName.args[0]].string.concrete
 
-        print file_name
-
         vm_related = any(vm_str in file_name.lower() for vm_str in VM_STRINGS)
 
-        print 'VM related: {}'.format(vm_related)
+        # print file_name
+        # print 'VM related: {}'.format(vm_related)
 
         if vm_related:
             ret_expr = -1  # INVALID_FILE_ATTRIBUTES
         else:
             ret_expr = self.state.se.Unconstrained("unconstrained_ret_GetFileAttributes", 32)
 
-        print "GetFileAttributes: " + str(lpFileName) + " " + "=> " + str(ret_expr)
+        # print "GetFileAttributes: " + str(lpFileName) + " " + "=> " + str(ret_expr)
         return ret_expr
 
 
@@ -139,3 +139,13 @@ def hook_all(proj):
     proj.hook_symbol("Sleep", angr.Hook(Sleep))
     proj.hook_symbol("GetCursorPos", angr.Hook(GetCursorPos))
     proj.hook_symbol("GetFileAttributesA", angr.Hook(GetFileAttributes))
+
+
+def patch_memory(proj, state):
+    # patches memory to pass hook evasion checks
+    for api in API_HOOK_CHECKS:
+        try:
+            api_code_addr = proj.loader.main_bin.imports[api].resolvedby.rebased_addr
+            state.memory.store(api_code_addr, state.se.BVV(0x8bff, 16))
+        except (KeyError, AttributeError):  # api not imported or not resolved
+            pass
