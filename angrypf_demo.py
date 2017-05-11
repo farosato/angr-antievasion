@@ -14,7 +14,10 @@ CHECKS = [
     ('vbox_sysfile2', 0x40320a, 0x403373),
     ('check_hook_DeleteFileW_m1', 0x4042bd, 0x4042d1),
     ('check_hook_ShellExecuteExW_m1', 0x4042d2, 0x4042e6),
-    ('check_hook_CreateProcessA_m1', 0x4042e7, 0x4042fb)
+    ('check_hook_CreateProcessA_m1', 0x4042e7, 0x4042fb),
+    ('wine_reg_key1', 0x403e3d, 0x403e58),
+    ('vbox_reg_key3', 0x402f2b, 0x402f46),
+    ('vmware_reg_key2', 0x403f1f, 0x403f3a)
 ]
 
 

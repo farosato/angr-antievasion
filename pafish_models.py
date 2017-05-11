@@ -6,7 +6,7 @@ from simuvex.plugins.plugin import SimStatePlugin
 from random import randint
 
 TICKS_PER_MS = 10000  # Windows TicksPerMillisecond = 10000
-VM_STRINGS = ['vm', 'vbox', 'virtualbox']
+VM_STRINGS = ['vm', 'vbox', 'virtualbox', 'sandboxie', 'sboxie', 'wine']
 API_HOOK_CHECKS = ['DeleteFileW', 'ShellExecuteExW', 'CreateProcessA']
 
 
@@ -126,6 +126,40 @@ class GetFileAttributes(simuvex.SimProcedure):
         return ret_expr
 
 
+class RegOpenKeyEx(simuvex.SimProcedure):
+
+    def execute(self, state, successors=None, arguments=None, ret_to=None):
+        super(RegOpenKeyEx, self).execute(state, successors, arguments, ret_to)
+        state.regs.esp += 4 * 5
+
+    def run(self, hKey, lpSubKey, ulOptions, samDesired, phkResult):
+        self.argument_types = {
+            0: self.ty_ptr(simuvex.s_type.SimTypeTop(self.state.arch)),
+            1: self.ty_ptr(simuvex.s_type.SimTypeString()),
+            2: simuvex.s_type.SimTypeInt(),
+            3: self.ty_ptr(simuvex.s_type.SimTypeTop(self.state.arch)),
+            4: self.ty_ptr(simuvex.s_type.SimTypeTop(self.state.arch)),
+        }
+
+        self.return_type = simuvex.s_type.SimTypeLong()
+
+        regkey_name = self.state.mem[lpSubKey.args[0]].string.concrete
+
+        vm_related = any(vm_str in regkey_name.lower() for vm_str in VM_STRINGS)
+
+        print regkey_name
+        print 'VM related: {}'.format(vm_related)
+
+        if vm_related:
+            ret_expr = 2  # ERROR_FILE_NOT_FOUND
+        else:
+            ret_expr = self.state.se.Unconstrained("unconstrained_ret_RegOpenKeyEx", 32)
+
+        print "RegOpenKeyEx: " + str(hKey) + " " + str(lpSubKey) + " " + str(ulOptions) + " " + str(
+            samDesired) + " " + str(phkResult) + " " + "=> " + str(ret_expr)
+        return ret_expr
+
+
 # Auxiliary functions #
 
 def rdtsc_monkey_patch():
@@ -139,6 +173,7 @@ def hook_all(proj):
     proj.hook_symbol("Sleep", angr.Hook(Sleep))
     proj.hook_symbol("GetCursorPos", angr.Hook(GetCursorPos))
     proj.hook_symbol("GetFileAttributesA", angr.Hook(GetFileAttributes))
+    proj.hook_symbol("RegOpenKeyExA", angr.Hook(RegOpenKeyEx))
 
 
 def patch_memory(proj, state):
