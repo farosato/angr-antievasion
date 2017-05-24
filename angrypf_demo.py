@@ -17,14 +17,17 @@ CHECKS = [
     ('check_hook_CreateProcessA_m1', 0x4042e7, 0x4042fb),
     ('wine_reg_key1', 0x403e3d, 0x403e58),
     ('vbox_reg_key3', 0x402f2b, 0x402f46),
-    ('vmware_reg_key2', 0x403f1f, 0x403f3a)
+    ('vmware_reg_key2', 0x403f1f, 0x403f3a),
+    # Need library models for the following commented out tests
+    # ('qemu_reg_key1', 0x4041fc, 0x404227),
+    # ('qemu_reg_key2', 0x404228, 0x404253)
 ]
 
 
 def test():
     logging.getLogger().setLevel(logging.WARNING)
 
-    proj = angr.Project('./pafish.exe', load_options={'auto_load_libs': False})
+    proj = angr.Project('./pafish.exe', load_options={'auto_load_libs': True})
 
     pafish_models.hook_all(proj)
 
@@ -40,6 +43,8 @@ def test():
 
         while len(path_group.active) > 0:
             path_group.explore(find=check_ret_addr)
+            # print path_group.active
+            # print len(path_group.active)
 
         for path in path_group.found:
             ret = path.state.regs.eax

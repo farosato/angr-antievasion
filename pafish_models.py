@@ -6,7 +6,7 @@ from simuvex.plugins.plugin import SimStatePlugin
 from random import randint
 
 TICKS_PER_MS = 10000  # Windows TicksPerMillisecond = 10000
-VM_STRINGS = ['vm', 'vbox', 'virtualbox', 'sandboxie', 'sboxie', 'wine']
+VM_STRINGS = ['vm', 'vbox', 'virtualbox', 'sandboxie', 'sboxie', 'wine', 'qemu', 'bochs']
 API_HOOK_CHECKS = ['DeleteFileW', 'ShellExecuteExW', 'CreateProcessA']
 
 
@@ -147,16 +147,49 @@ class RegOpenKeyEx(simuvex.SimProcedure):
 
         vm_related = any(vm_str in regkey_name.lower() for vm_str in VM_STRINGS)
 
-        print regkey_name
-        print 'VM related: {}'.format(vm_related)
+        # print regkey_name
+        # print 'VM related: {}'.format(vm_related)
 
         if vm_related:
             ret_expr = 2  # ERROR_FILE_NOT_FOUND
         else:
-            ret_expr = self.state.se.Unconstrained("unconstrained_ret_RegOpenKeyEx", 32)
+            ret_expr = 0  # self.state.se.Unconstrained("unconstrained_ret_RegOpenKeyEx", 32)
 
-        print "RegOpenKeyEx: " + str(hKey) + " " + str(lpSubKey) + " " + str(ulOptions) + " " + str(
-            samDesired) + " " + str(phkResult) + " " + "=> " + str(ret_expr)
+        # print "RegOpenKeyEx: " + str(hKey) + " " + str(lpSubKey) + " " + str(ulOptions) + " " +
+        #     str(samDesired) + " " + str(phkResult) + " " + "=> " + str(ret_expr)
+        return ret_expr
+
+
+class RegQueryValueEx(simuvex.SimProcedure):
+
+    def execute(self, state, successors=None, arguments=None, ret_to=None):
+        super(RegQueryValueEx, self).execute(state, successors, arguments, ret_to)
+        state.regs.esp += 4 * 6
+
+    def run(self, hKey, lpValueName, lpReserved, lpType, lpData, lpcbData):
+        self.argument_types = {
+            0: self.ty_ptr(simuvex.s_type.SimTypeTop(self.state.arch)),
+            1: self.ty_ptr(simuvex.s_type.SimTypeString()),
+            2: self.ty_ptr(simuvex.s_type.SimTypeInt()),
+            3: self.ty_ptr(simuvex.s_type.SimTypeInt()),
+            4: self.ty_ptr(simuvex.s_type.SimTypeTop(self.state.arch)),
+            5: self.ty_ptr(simuvex.s_type.SimTypeInt()),
+        }
+
+        self.return_type = simuvex.s_type.SimTypeLong()
+
+        # import IPython; IPython.embed()
+        if lpData.concrete and lpData.args[0] != 0:  # not NULL
+            size_ptr = lpcbData.args[0]
+            size = self.state.mem[size_ptr].int.concrete  # assuming lpcbData is not null
+            data_str = "These aren't the droids you're looking for."[:size-1] + '\0'
+            data = self.state.se.BVV(data_str)
+            self.state.memory.store(lpData.args[0], data)
+            self.state.memory.store(size_ptr, self.state.se.BVV(len(data_str), 32))
+
+        ret_expr = 0
+        print "RegQueryValueEx: " + str(hKey) + " " + str(lpValueName) + " " + str(lpReserved) + " " + str(
+            lpType) + " " + str(lpData) + " " + str(lpcbData) + " " + "=> " + str(ret_expr)
         return ret_expr
 
 
@@ -174,6 +207,7 @@ def hook_all(proj):
     proj.hook_symbol("GetCursorPos", angr.Hook(GetCursorPos))
     proj.hook_symbol("GetFileAttributesA", angr.Hook(GetFileAttributes))
     proj.hook_symbol("RegOpenKeyExA", angr.Hook(RegOpenKeyEx))
+    proj.hook_symbol("RegQueryValueExA", angr.Hook(RegQueryValueEx))
 
 
 def patch_memory(proj, state):
