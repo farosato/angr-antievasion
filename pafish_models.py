@@ -188,8 +188,8 @@ class RegQueryValueEx(simuvex.SimProcedure):
             self.state.memory.store(size_ptr, self.state.se.BVV(len(data_str), 32))
 
         ret_expr = 0
-        print "RegQueryValueEx: " + str(hKey) + " " + str(lpValueName) + " " + str(lpReserved) + " " + str(
-            lpType) + " " + str(lpData) + " " + str(lpcbData) + " " + "=> " + str(ret_expr)
+        # print "RegQueryValueEx: " + str(hKey) + " " + str(lpValueName) + " " + str(lpReserved) + " " + str(
+        #     lpType) + " " + str(lpData) + " " + str(lpcbData) + " " + "=> " + str(ret_expr)
         return ret_expr
 
 
