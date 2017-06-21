@@ -20,7 +20,15 @@ if __name__ == '__main__':
             pass  # bad line
 
     with open(check_file_name, 'r') as cf:
-        checks = [line.strip() for line in cf]
+        lines = [line.strip() for line in cf]
+        checks = []
+        for line in lines:
+            try:
+                line = line[:line.index('#')].strip()
+            except ValueError:
+                pass
+            if line:
+                checks.append(line)
 
     check_table = []
     for c in checks:
