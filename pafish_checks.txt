@@ -1,16 +1,20 @@
-cpu_rdtsc
-gensandbox_mouse_act
-gensandbox_sleep_patched
-vmware_sysfile1
-vmware_sysfile2
-vbox_sysfile1
-vbox_sysfile2
-check_hook_DeleteFileW_m1
-check_hook_ShellExecuteExW_m1
-check_hook_CreateProcessA_m1
-wine_reg_key1
-vbox_reg_key3
-vmware_reg_key2
-qemu_reg_key1
-qemu_reg_key2
-vmware_reg_key1
+# Debuggers detection
+debug_isdebuggerpresent
+debug_outputdebugstring
+
+# cpu_rdtsc
+# gensandbox_mouse_act
+# gensandbox_sleep_patched
+# vmware_sysfile1
+# vmware_sysfile2
+# vbox_sysfile1
+# vbox_sysfile2
+# check_hook_DeleteFileW_m1
+# check_hook_ShellExecuteExW_m1
+# check_hook_CreateProcessA_m1
+# wine_reg_key1
+# vbox_reg_key3
+# vmware_reg_key2
+# qemu_reg_key1
+# qemu_reg_key2
+# vmware_reg_key1
