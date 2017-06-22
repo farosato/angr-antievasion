@@ -6,5 +6,21 @@
     [
         "debug_outputdebugstring", 
         4206119
+    ], 
+    [
+        "cpu_rdtsc", 
+        4212523
+    ], 
+    [
+        "cpu_rdtsc_force_vmexit", 
+        4212675
+    ], 
+    [
+        "cpu_hv", 
+        4212827
+    ], 
+    [
+        "cpu_known_vm_vendors", 
+        4212992
     ]
 ]

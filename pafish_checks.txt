@@ -2,7 +2,12 @@
 debug_isdebuggerpresent
 debug_outputdebugstring
 
-# cpu_rdtsc
+# CPU information based detection
+cpu_rdtsc
+cpu_rdtsc_force_vmexit
+cpu_hv  # simuvex dirty helper for CPUID is enough
+cpu_known_vm_vendors  # simuvex dirty helper for CPUID is enough
+
 # gensandbox_mouse_act
 # gensandbox_sleep_patched
 # vmware_sysfile1

@@ -106,10 +106,14 @@ class OutputDebugString(simuvex.SimProcedure):
         print "OutputDebugString: " + str(lpOutputString) + " " + "=> " + 'void'
 
 
+# CPU information based detection
+
 def rdtsc_hook(state):
     # print "GOTCHA!"
     state.paranoid.tsc += 1  # increase it just to be on the safe side
     return state.se.BVV(state.paranoid.tsc, 64), []
+
+# CPUID based detection tricks don't need any handling (simuvex dirty helper emulates a real cpu info)
 
 
 class Sleep(simuvex.SimProcedure):
