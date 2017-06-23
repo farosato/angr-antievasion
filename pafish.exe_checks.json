@@ -22,5 +22,53 @@
     [
         "cpu_known_vm_vendors", 
         4212992
+    ], 
+    [
+        "gensandbox_mouse_act", 
+        4208639
+    ], 
+    [
+        "gensandbox_username", 
+        4208728
+    ], 
+    [
+        "gensandbox_path", 
+        4208956
+    ], 
+    [
+        "gensandbox_common_names", 
+        4209186
+    ], 
+    [
+        "gensandbox_drive_size", 
+        4209509
+    ], 
+    [
+        "gensandbox_drive_size2", 
+        4209747
+    ], 
+    [
+        "gensandbox_sleep_patched", 
+        4209834
+    ], 
+    [
+        "gensandbox_one_cpu", 
+        4209898
+    ], 
+    [
+        "gensandbox_one_cpu_GetSystemInfo", 
+        4209938
+    ], 
+    [
+        "gensandbox_less_than_onegb", 
+        4209974
+    ], 
+    [
+        "gensandbox_uptime", 
+        4210041
+    ], 
+    [
+        "gensandbox_IsNativeVhdBoot", 
+        4210067
     ]
 ]

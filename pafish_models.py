@@ -62,9 +62,9 @@ class SetLastError(simuvex.SimProcedure):
             0: simuvex.s_type.SimTypeInt(),
         }
 
-        self.return_type = None
-
         self.state.paranoid.last_error = dwErrCode.args[0]
+
+        self.return_type = None
 
         print "SetLastError: " + str(dwErrCode) + " " + "=> " + 'void'
         return
@@ -97,11 +97,11 @@ class OutputDebugString(simuvex.SimProcedure):
 
         self.argument_types = {
             0: self.ty_ptr(simuvex.s_type.SimTypeString()),
-            }
-
-        self.return_type = None
+        }
 
         self.state.paranoid.last_error = 1284  # Update last error since debugger is not present
+
+        self.return_type = None
 
         print "OutputDebugString: " + str(lpOutputString) + " " + "=> " + 'void'
 
@@ -114,6 +114,59 @@ def rdtsc_hook(state):
     return state.se.BVV(state.paranoid.tsc, 64), []
 
 # CPUID based detection tricks don't need any handling (simuvex dirty helper emulates a real cpu info)
+
+
+# Generic sandbox detection
+
+class GetCursorPos(simuvex.SimProcedure):
+
+    def execute(self, state, successors=None, arguments=None, ret_to=None):
+        super(GetCursorPos, self).execute(state, successors, arguments, ret_to)
+        state.regs.esp += 4 * 1
+
+    def run(self, lpPoint):
+
+        self.argument_types = {
+            0: self.ty_ptr(simuvex.s_type.SimTypeTop(self.state.arch)),
+        }
+
+        x = self.state.se.BVV(randint(0, 300), 32)
+        y = self.state.se.BVV(randint(0, 300), 32)
+
+        self.state.memory.store(lpPoint, x)
+        self.state.memory.store(lpPoint+4, y)
+
+        self.return_type = simuvex.s_type.SimTypeInt()
+        ret_expr = 1
+        print "GetCursorPos: " + str(lpPoint) + " " + "=> " + str(ret_expr)
+        return ret_expr
+
+
+class GetUserName(simuvex.SimProcedure):
+
+    def execute(self, state, successors=None, arguments=None, ret_to=None):
+        super(GetUserName, self).execute(state, successors, arguments, ret_to)
+        state.regs.esp += 4 * 2
+
+    def run(self, lpBuffer, lpnSize):
+
+        self.argument_types = {
+            0: self.ty_ptr(simuvex.s_type.SimTypeString()),
+            1: self.ty_ptr(simuvex.s_type.SimTypeInt()),
+        }
+
+        if lpBuffer.concrete and lpBuffer.args[0] != 0:  # not NULL
+            size_ptr = lpnSize.args[0]
+            size = self.state.mem[size_ptr].int.concrete  # assuming lpcbData is not null
+            user_str = "AngryPafish"[:size-1] + '\0'
+            user = self.state.se.BVV(user_str)
+            self.state.memory.store(lpBuffer.args[0], user)
+            self.state.memory.store(size_ptr, self.state.se.BVV(len(user_str), 32))
+
+        self.return_type = simuvex.s_type.SimTypeInt()
+        ret_expr = 1
+        print "GetUserName: " + str(lpBuffer) + " " + str(lpnSize) + " " + "=> " + str(ret_expr)
+        return ret_expr
 
 
 class Sleep(simuvex.SimProcedure):
@@ -149,31 +202,6 @@ class GetTickCount(simuvex.SimProcedure):
 
         ret_expr = self.state.paranoid.tsc // TICKS_PER_MS
         # print "GetTickCount: " + "=> " + str(ret_expr)
-        return ret_expr
-
-
-class GetCursorPos(simuvex.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(GetCursorPos, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 1
-
-    def run(self, lpPoint):
-
-        self.argument_types = {
-            0: self.ty_ptr(simuvex.s_type.SimTypeTop(self.state.arch)),
-        }
-
-        self.return_type = simuvex.s_type.SimTypeInt()
-
-        x = self.state.se.BVV(randint(0, 300), 32)
-        y = self.state.se.BVV(randint(0, 300), 32)
-
-        self.state.memory.store(lpPoint, x)
-        self.state.memory.store(lpPoint+4, y)
-
-        ret_expr = 1
-        # print "GetCursorPos: " + str(lpPoint) + " " + "=> " + str(ret_expr)
         return ret_expr
 
 
@@ -286,7 +314,12 @@ def hook_all(proj):
     proj.hook_symbol("GetLastError", angr.Hook(GetLastError))
     proj.hook_symbol("OutputDebugStringA", angr.Hook(OutputDebugString))
 
+    # CPU info based detection
     rdtsc_monkey_patch()
+
+    # Generic sandbox detection
+    proj.hook_symbol("GetUserNameA", angr.Hook(GetUserName))
+
     proj.hook_symbol("GetTickCount", angr.Hook(GetTickCount))
     proj.hook_symbol("Sleep", angr.Hook(Sleep))
     proj.hook_symbol("GetCursorPos", angr.Hook(GetCursorPos))

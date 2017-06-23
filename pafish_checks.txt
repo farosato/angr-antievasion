@@ -8,6 +8,20 @@ cpu_rdtsc_force_vmexit
 cpu_hv  # simuvex dirty helper for CPUID is enough
 cpu_known_vm_vendors  # simuvex dirty helper for CPUID is enough
 
+# Generic sandbox detection
+gensandbox_mouse_act
+gensandbox_username
+gensandbox_path
+gensandbox_common_names
+gensandbox_drive_size
+gensandbox_drive_size2
+gensandbox_sleep_patched
+gensandbox_one_cpu
+gensandbox_one_cpu_GetSystemInfo
+gensandbox_less_than_onegb
+gensandbox_uptime
+gensandbox_IsNativeVhdBoot
+
 # gensandbox_mouse_act
 # gensandbox_sleep_patched
 # vmware_sysfile1
