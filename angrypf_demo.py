@@ -50,7 +50,7 @@ def test():
 
         for err in path_group.errored:
             print err.error
-            # import IPython; IPython.embed()
+            import IPython; IPython.embed()
 
         for path in path_group.found:
             ret = path.state.regs.eax

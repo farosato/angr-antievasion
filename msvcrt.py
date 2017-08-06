@@ -66,16 +66,18 @@ def patched_use_sim_procedures(self):
                         pending_hooks[func.name] = Hook(simfuncs[func.name])
                         already_resolved.add(func.name)
                         break
-                    elif lstrip_under(func.name) in simfuncs:
-                        libc_corresponding[func.name] = simfuncs[lstrip_under(func.name)]
+                    else:
+                        libc_std_name_guess = lstrip_under(func.name)
+                        if libc_std_name_guess in simfuncs and func.name not in libc_corresponding:
+                            libc_corresponding[func.name] = simfuncs[libc_std_name_guess]
                 else:  # we could not find a simprocedure for this function
-                    if not func.resolved:  # the loader couldn't find one either
-                        if func.name in libc_corresponding:  # got a libc corresponding guess, use that
-                            l.info("Providing %s from %s with SimProcedure for %s", func.name, lib, lstrip_under(func.name))
-                            pending_hooks[func.name] = Hook(libc_corresponding[func.name])
-                            already_resolved.add(func.name)
-                        else:
-                            unresolved.add(func)
+                    if func.name in libc_corresponding:  # got a libc corresponding guess, use that
+                        l.info("Providing %s from %s with guessed SimProcedure %s", func.name, lib,
+                               libc_corresponding[func.name])
+                        pending_hooks[func.name] = Hook(libc_corresponding[func.name])
+                        already_resolved.add(func.name)
+                    elif not func.resolved:  # the loader couldn't find one either
+                        unresolved.add(func)
                     else:
                         # mark it as resolved
                         already_resolved.add(func.name)
