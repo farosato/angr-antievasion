@@ -4,6 +4,7 @@ import angr
 import pafish_models
 import logging
 import json
+import msvcrt
 
 # CHECK_TABLE = [
 #     ('cpu_rdtsc', 0x40472b),
@@ -12,9 +13,11 @@ import json
 
 def test():
     logging.getLogger().setLevel(logging.WARNING)
-    # logging.getLogger('angr.project').setLevel(logging.DEBUG)
+    logging.getLogger('angr.project').setLevel(logging.DEBUG)
     # logging.getLogger('simuvex.procedures').setLevel(logging.DEBUG)
     # logging.getLogger("cle.loader").setLevel(logging.DEBUG)
+
+    msvcrt.msvcrt_sim_procedures_monkey_patch()
 
     proj = angr.Project('./pafish.exe', load_options={'auto_load_libs': True})
 
@@ -40,14 +43,19 @@ def test():
 
         while len(path_group.active) > 0:
             path_group.explore(find=ret_addr)
+            # import IPython; IPython.embed()
             # print path_group.active
 
         print path_group
 
-        for path in path_group.found:
+        for err in path_group.errored:
+            print err.error
             # import IPython; IPython.embed()
+
+        for path in path_group.found:
             ret = path.state.regs.eax
             print path, "returned {}".format(ret)
+            # import IPython; IPython.embed()
 
 
 if __name__ == '__main__':
