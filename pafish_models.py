@@ -10,6 +10,8 @@ TICKS_PER_MS = 10000  # Windows TicksPerMillisecond = 10000
 MALWARE_STRINGS = ['malware', 'sample', 'virus']
 VM_STRINGS = ['vm', 'vbox', 'virtualbox', 'sandboxie', 'sboxie', 'wine', 'qemu', 'bochs']
 API_HOOK_CHECKS = ['DeleteFileW', 'ShellExecuteExW', 'CreateProcessA']
+BLACKLISTED_MODULES = ['sbiedll.dll']
+BLACKLISTED_SYMBOLS = ['wine_get_unix_file_name']
 
 
 # PLUGINS #
@@ -84,17 +86,16 @@ class GetFileAttributes(simuvex.SimProcedure):
 
         self.return_type = simuvex.s_type.SimTypeInt()
 
-        file_name = self.state.mem[lpFileName.args[0]].string.concrete
+        assert not self.state.se.symbolic(lpFileName)
+        file_name = self.state.mem[self.state.se.any_int(lpFileName)].string.concrete
 
         malware_related = any(mal_str in file_name.lower() for mal_str in MALWARE_STRINGS)
         vm_related = any(vm_str in file_name.lower() for vm_str in VM_STRINGS)
 
-        print file_name, "malware:", malware_related, "vm:", vm_related
-
         if malware_related or vm_related:
             ret_expr = -1  # INVALID_FILE_ATTRIBUTES, i.e. file not found
         else:
-            ret_expr = self.state.se.BVS("unconstrained_ret_GetFileAttributes", 32)
+            ret_expr = self.state.se.BVS("unc_ret_GetFileAttributes_{}".format(file_name), 32)
 
         print "GetFileAttributes: " + str(lpFileName) + " " + "=> " + str(ret_expr)
         return ret_expr
@@ -117,14 +118,15 @@ class RegOpenKeyEx(simuvex.SimProcedure):
 
         self.return_type = simuvex.s_type.SimTypeLong()
 
-        regkey_name = self.state.mem[lpSubKey.args[0]].string.concrete
+        assert not self.state.se.symbolic(lpSubKey)
+        regkey_name = self.state.mem[self.state.se.any_int(lpSubKey)].string.concrete
 
         vm_related = any(vm_str in regkey_name.lower() for vm_str in VM_STRINGS)
 
         if vm_related:
             ret_expr = 2  # ERROR_FILE_NOT_FOUND
         else:
-            ret_expr = 0  # self.state.se.Unconstrained("unconstrained_ret_RegOpenKeyEx", 32)
+            ret_expr = self.state.se.BVS("unc_ret_RegOpenKeyEx_{}".format(regkey_name), 32)
 
         print "RegOpenKeyEx: " + str(hKey) + " " + str(lpSubKey) + " " + str(ulOptions) + " " +\
             str(samDesired) + " " + str(phkResult) + " " + "=> " + str(ret_expr)
@@ -280,16 +282,18 @@ class GetModuleFileName(simuvex.SimProcedure):
 
         self.return_type = simuvex.s_type.SimTypeInt()
 
-        if hModule.args[0] == 0:  # NULL, retrieve path of the exe of the current process
+        assert not self.state.se.symbolic(hModule)
+        if self.state.se.any_int(hModule) == 0:  # NULL, retrieve path of the exe of the current process
             size = nSize.args[0]  # assuming nSize is concrete
             path_str = "//AngryPafish"[:size-1] + '\0'
             path = self.state.se.BVV(path_str)
             self.state.memory.store(lpFilename.args[0], path)
             ret_expr = len(path_str)
         else:
-            self.state.memory.store(lpFilename.args[0],
-                                    self.state.se.BVS("unconstrained_filename_GetModuleFileName", 32))
-            ret_expr = self.state.se.BVS("unconstrained_ret_GetModuleFileName", 32)
+            assert not self.state.se.symbolic(lpFilename)
+            self.state.memory.store(self.state.se.any_int(lpFilename),
+                                    self.state.se.BVS("unc_data_GetModuleFileName", 32))
+            ret_expr = self.state.se.BVS("unc_ret_GetModuleFileName", 32)
 
         print "GetModuleFileName: " + str(hModule) + " " + str(lpFilename) + " " + str(nSize) +\
               " " + "=> " + str(ret_expr)
@@ -342,11 +346,12 @@ class CreateFile(simuvex.SimProcedure):
 
         self.return_type = self.ty_ptr(simuvex.s_type.SimTypeTop(self.state.arch))
 
-        file_name = self.state.mem[lpFileName.args[0]].string.concrete
+        assert not self.state.se.symbolic(lpFileName)
+        file_name = self.state.mem[self.state.se.any_int(lpFileName)].string.concrete
         if file_name == '\\\\.\\PhysicalDrive0':
             ret_expr = -1  # INVALID_HANDLE_VALUE
         else:
-            ret_expr = self.state.se.BVS("unconstrained_ret_CreateFile", 32)
+            ret_expr = self.state.se.BVS("unc_ret_CreateFile_{}".format(file_name), 32)
         print "CreateFile: " + str(lpFileName) + " " + str(dwDesiredAccess) + " " + str(dwShareMode) + " " +\
               str(lpSecurityAttributes) + " " + str(dwCreationDisposition) + " " + str(dwFlagsAndAttributes) + " " +\
               str(hTemplateFile) + " " + "=> " + str(ret_expr)
@@ -446,16 +451,76 @@ class GlobalMemoryStatusEx(simuvex.SimProcedure):
         }
 
         self.return_type = simuvex.s_type.SimTypeInt()
-        import IPython; IPython.embed()
 
         memstatus_struct = self.state.se.BVS('MEMORYSTATUSEX', 68*8)  # dwLength is concrete
         self.state.memory.store(lpBuffer+4, memstatus_struct)
         ullTotalPhys = memstatus_struct.get_bytes(8, 8)
         self.state.se.add(claripy.UGE(ullTotalPhys, 2**30))  # ullTotalPhys >= 1 GB
         self.state.memory.store(lpBuffer+8, ullTotalPhys)
-        import IPython; IPython.embed()
+
         ret_expr = 1
         print "GlobalMemoryStatusEx: " + str(lpBuffer) + " " + "=> " + str(ret_expr)
+        return ret_expr
+
+
+# Sandboxie detection tricks
+
+class GetModuleHandle(simuvex.SimProcedure):
+
+    def execute(self, state, successors=None, arguments=None, ret_to=None):
+        super(GetModuleHandle, self).execute(state, successors, arguments, ret_to)
+        state.regs.esp += 4 * 1
+
+    def run(self, lpModuleName):
+
+        self.argument_types = {
+            0: self.ty_ptr(simuvex.s_type.SimTypeString()),
+        }
+
+        self.return_type = self.ty_ptr(simuvex.s_type.SimTypeTop(self.state.arch))
+
+        assert not self.state.se.symbolic(lpModuleName)
+        module_name = self.state.mem[self.state.se.any_int(lpModuleName)].string.concrete
+
+        if module_name.lower() in BLACKLISTED_MODULES:
+            ret_expr = 0  # NULL, i.e. module not found
+        else:
+            ret_expr = self.state.se.BVS("unc_ret_GetModuleHandle_{}".format(module_name), 32)
+
+        print "GetModuleHandle: " + str(lpModuleName) + " " + "=> " + str(ret_expr)
+        return ret_expr
+
+
+# Wine detection tricks
+
+class GetProcAddress(simuvex.SimProcedure):
+
+    def execute(self, state, successors=None, arguments=None, ret_to=None):
+        super(GetProcAddress, self).execute(state, successors, arguments, ret_to)
+        state.regs.esp += 4 * 2
+
+    def run(self, hModule, lpProcName):
+        self.argument_types = {
+            0: self.ty_ptr(simuvex.s_type.SimTypeTop(self.state.arch)),
+            1: self.ty_ptr(simuvex.s_type.SimTypeString())
+        }
+
+        self.return_type = self.ty_ptr(simuvex.s_type.SimTypeTop(self.state.arch))
+
+        assert not self.state.se.symbolic(lpProcName)
+
+        lpProcName_int_high = self.state.se.any_int(lpProcName) & 0xFFFF0000
+
+        if lpProcName_int_high == 0:  # ordinal import
+            assert False  # TODO: add support ordinal value
+        else:
+            sym_name = self.state.mem[self.state.se.any_int(lpProcName)].string.concrete
+            if sym_name in BLACKLISTED_SYMBOLS:
+                ret_expr = 0  # NULL, i.e. symbol not found
+            else:
+                ret_expr = self.state.se.BVS("unc_ret_GetProcAddress_{}".format(sym_name), 32)
+
+        print "GetProcAddress: " + str(hModule) + " " + str(lpProcName) + " => " + str(ret_expr)
         return ret_expr
 
 
@@ -492,6 +557,12 @@ def hook_all(proj):
     proj.hook_symbol("Sleep", angr.Hook(Sleep))
     proj.hook_symbol("GetSystemInfo", angr.Hook(GetSystemInfo))
     proj.hook_symbol("GlobalMemoryStatusEx", angr.Hook(GlobalMemoryStatusEx))
+
+    # Sandboxie detection tricks
+    proj.hook_symbol("GetModuleHandleA", angr.Hook(GetModuleHandle))
+
+    # Wine detection tricks
+    proj.hook_symbol("GetProcAddress", angr.Hook(GetProcAddress))
 
 
 def patch_memory(proj, state):

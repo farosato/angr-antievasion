@@ -82,5 +82,17 @@
     [
         "check_hook_CreateProcessA_m1", 
         4211431
+    ], 
+    [
+        "sboxie_detect_sbiedll", 
+        4206192
+    ], 
+    [
+        "wine_detect_get_unix_file_name", 
+        4210156
+    ], 
+    [
+        "wine_reg_key1", 
+        4210237
     ]
 ]
