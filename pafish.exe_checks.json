@@ -70,5 +70,17 @@
     [
         "gensandbox_IsNativeVhdBoot", 
         4210067
+    ], 
+    [
+        "check_hook_DeleteFileW_m1", 
+        4211389
+    ], 
+    [
+        "check_hook_ShellExecuteExW_m1", 
+        4211410
+    ], 
+    [
+        "check_hook_CreateProcessA_m1", 
+        4211431
     ]
 ]

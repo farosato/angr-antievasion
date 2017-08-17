@@ -12,15 +12,20 @@ cpu_known_vm_vendors  # simuvex dirty helper for CPUID is enough
 gensandbox_mouse_act
 gensandbox_username
 gensandbox_path
-gensandbox_common_names
-gensandbox_drive_size
-gensandbox_drive_size2
+gensandbox_common_names  # need vsnprintf SimProcedure (currently a stub)
+gensandbox_drive_size  # hacked
+gensandbox_drive_size2  # hacked
 gensandbox_sleep_patched
-gensandbox_one_cpu
-gensandbox_one_cpu_GetSystemInfo
-gensandbox_less_than_onegb
+gensandbox_one_cpu  # don't think it's possible to patch it (symbolic indirection)
+gensandbox_one_cpu_GetSystemInfo  # correctly constrained num processors, but exploration doesn't seem to care
+gensandbox_less_than_onegb  # correctly constrained available ram, but exploration doesn't seem to care
 gensandbox_uptime
-gensandbox_IsNativeVhdBoot
+gensandbox_IsNativeVhdBoot  # ignored
+
+# Hooks detection
+check_hook_DeleteFileW_m1
+check_hook_ShellExecuteExW_m1
+check_hook_CreateProcessA_m1
 
 # gensandbox_mouse_act
 # gensandbox_sleep_patched
