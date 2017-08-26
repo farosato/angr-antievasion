@@ -16,6 +16,7 @@ def test():
     logging.getLogger('angr.project').setLevel(logging.DEBUG)
     # logging.getLogger('simuvex.procedures').setLevel(logging.DEBUG)
     # logging.getLogger("cle.loader").setLevel(logging.DEBUG)
+    # logging.getLogger("simuvex.procedures.libc.memcmp").setLevel(logging.DEBUG)
 
     msvcrt.msvcrt_sim_procedures_monkey_patch()
 
@@ -42,15 +43,17 @@ def test():
         ret_addr = check_call_state.mem[check_call_state.regs.esp].int.concrete
 
         while len(path_group.active) > 0:
+            # print 'ACTIVE before:', path_group.active
             path_group.explore(find=ret_addr)
+            # print 'ACTIVE after:', path_group.active
+            # print 'FOUND:', path_group.found
             # import IPython; IPython.embed()
-            # print path_group.active
 
         print path_group
 
         for err in path_group.errored:
             print err.error
-            import IPython; IPython.embed()
+            # import IPython; IPython.embed()
 
         for path in path_group.found:
             ret = path.state.regs.eax

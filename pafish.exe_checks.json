@@ -1,98 +1,34 @@
 [
     [
-        "debug_isdebuggerpresent", 
-        4206088
+        "qemu_reg_key1", 
+        4211196
     ], 
     [
-        "debug_outputdebugstring", 
-        4206119
+        "qemu_reg_key2", 
+        4211240
     ], 
     [
-        "cpu_rdtsc", 
-        4212523
+        "qemu_cpu_name", 
+        4211284
     ], 
     [
-        "cpu_rdtsc_force_vmexit", 
-        4212675
+        "bochs_reg_key1", 
+        4213344
     ], 
     [
-        "cpu_hv", 
-        4212827
+        "bochs_cpu_amd1", 
+        4213388
     ], 
     [
-        "cpu_known_vm_vendors", 
-        4212992
+        "bochs_cpu_amd2", 
+        4213442
     ], 
     [
-        "gensandbox_mouse_act", 
-        4208639
+        "bochs_cpu_intel1", 
+        4213494
     ], 
     [
-        "gensandbox_username", 
-        4208728
-    ], 
-    [
-        "gensandbox_path", 
-        4208956
-    ], 
-    [
-        "gensandbox_common_names", 
-        4209186
-    ], 
-    [
-        "gensandbox_drive_size", 
-        4209509
-    ], 
-    [
-        "gensandbox_drive_size2", 
-        4209747
-    ], 
-    [
-        "gensandbox_sleep_patched", 
-        4209834
-    ], 
-    [
-        "gensandbox_one_cpu", 
-        4209898
-    ], 
-    [
-        "gensandbox_one_cpu_GetSystemInfo", 
-        4209938
-    ], 
-    [
-        "gensandbox_less_than_onegb", 
-        4209974
-    ], 
-    [
-        "gensandbox_uptime", 
-        4210041
-    ], 
-    [
-        "gensandbox_IsNativeVhdBoot", 
-        4210067
-    ], 
-    [
-        "check_hook_DeleteFileW_m1", 
-        4211389
-    ], 
-    [
-        "check_hook_ShellExecuteExW_m1", 
-        4211410
-    ], 
-    [
-        "check_hook_CreateProcessA_m1", 
-        4211431
-    ], 
-    [
-        "sboxie_detect_sbiedll", 
-        4206192
-    ], 
-    [
-        "wine_detect_get_unix_file_name", 
-        4210156
-    ], 
-    [
-        "wine_reg_key1", 
-        4210237
+        "cuckoo_check_tls", 
+        4213251
     ]
 ]
