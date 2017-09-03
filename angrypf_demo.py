@@ -4,10 +4,11 @@ import angr
 import pafish_models
 import logging
 import json
-import msvcrt
+from termcolor import colored
+# import msvcrt
 
 # CHECK_TABLE = [
-#     ('cpu_rdtsc', 0x40472b),
+#     ('wine_reg_key1', 4210237),
 # ]
 
 
@@ -18,11 +19,15 @@ def test():
     # logging.getLogger("cle.loader").setLevel(logging.DEBUG)
     # logging.getLogger("simuvex.procedures.libc.memcmp").setLevel(logging.DEBUG)
 
-    msvcrt.msvcrt_sim_procedures_monkey_patch()
+    # msvcrt.msvcrt_sim_procedures_monkey_patch()
 
-    proj = angr.Project('./pafish.exe', load_options={'auto_load_libs': True})
+    proj = angr.Project('./pafish.exe', load_options={'auto_load_libs': True, 'case_insensitive': True})
+
+    # import IPython; IPython.embed()
 
     pafish_models.hook_all(proj)
+
+    # import IPython; IPython.embed()
 
     if 'CHECK_TABLE' not in globals():
         # load it from json file
@@ -36,29 +41,32 @@ def test():
         check_call_state = proj.factory.call_state(check_addr)
         check_call_state.register_plugin("paranoid", pafish_models.SimStateParanoid())
 
-        pafish_models.patch_memory(proj, check_call_state)
+        pafish_models.patch_memory(check_call_state)
 
-        path_group = proj.factory.path_group(check_call_state)
+        simgr = proj.factory.simulation_manager(check_call_state)
 
         ret_addr = check_call_state.mem[check_call_state.regs.esp].int.concrete
 
-        while len(path_group.active) > 0:
-            # print 'ACTIVE before:', path_group.active
-            path_group.explore(find=ret_addr)
-            # print 'ACTIVE after:', path_group.active
-            # print 'FOUND:', path_group.found
+        while len(simgr.active) > 0:
+            # print 'ACTIVE before:', simgr.active
+            simgr.explore(find=ret_addr)
+            # print 'ACTIVE after:', simgr.active
+            # print 'FOUND:', simgr.found
             # import IPython; IPython.embed()
 
-        print path_group
+        print simgr
 
-        for err in path_group.errored:
+        for err in simgr.errored:
             print err.error
             # import IPython; IPython.embed()
 
-        for path in path_group.found:
-            ret = path.state.regs.eax
-            print path, "returned {}".format(ret)
-            # import IPython; IPython.embed()
+        for sim in simgr.found:
+            ret = sim.state.regs.eax
+            ret_str = colored(ret, 'red')
+            if not sim.state.solver.symbolic(ret) and sim.state.solver.eval(ret) == 0:
+                ret_str = colored(ret, 'cyan')
+            print sim, "returned {}".format(ret_str)
+            import IPython; IPython.embed()
 
 
 if __name__ == '__main__':

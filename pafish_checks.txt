@@ -1,67 +1,67 @@
-## Debuggers detection
-#debug_isdebuggerpresent
-#debug_outputdebugstring
-#
-## CPU information based detection
-#cpu_rdtsc
-#cpu_rdtsc_force_vmexit
-#cpu_hv  # simuvex dirty helper for CPUID is enough
-#cpu_known_vm_vendors  # simuvex dirty helper for CPUID is enough
-#
-## Generic sandbox detection
-#gensandbox_mouse_act
-#gensandbox_username
-#gensandbox_path
-#gensandbox_common_names  # need vsnprintf SimProcedure (currently a stub)
-#gensandbox_drive_size  # hacked
-#gensandbox_drive_size2  # hacked
-#gensandbox_sleep_patched
-#gensandbox_one_cpu  # don't think it's possible to patch it (symbolic indirection)
-#gensandbox_one_cpu_GetSystemInfo  # correctly constrained num processors, return value still conditional bc it doesn't affect control flow
-#gensandbox_less_than_onegb  # correctly constrained available ram, return value still conditional bc it doesn't affect control flow
-#gensandbox_uptime
-#gensandbox_IsNativeVhdBoot  # ignored
-#
-## Hooks detection
-#check_hook_DeleteFileW_m1
-#check_hook_ShellExecuteExW_m1
-#check_hook_CreateProcessA_m1
-#
-## Sandboxie detection tricks
-#sboxie_detect_sbiedll
-#
-## Wine detection tricks
-#wine_detect_get_unix_file_name
-#wine_reg_key1
-#
-## VirtualBox detection tricks
-#vbox_reg_key1
-#vbox_reg_key2
-#vbox_reg_key3
-#vbox_reg_key4
-#vbox_reg_key5
-#vbox_reg_key7
-#vbox_reg_key8
-#vbox_reg_key9
-#vbox_reg_key10
-#vbox_sysfile1
-#vbox_sysfile2
-#vbox_mac
-#vbox_devices
-#vbox_traywindow
-#vbox_network_share
-#vbox_processes  # hacked
-#vbox_wmi_devices  # huge overkill to implement, actually fails by itself
-#
+# Debuggers detection
+debug_isdebuggerpresent
+debug_outputdebugstring
+
+# CPU information based detection
+cpu_rdtsc
+cpu_rdtsc_force_vmexit
+cpu_hv  # simuvex dirty helper for CPUID is enough
+cpu_known_vm_vendors  # simuvex dirty helper for CPUID is enough
+
+# Generic sandbox detection
+gensandbox_mouse_act
+gensandbox_username
+gensandbox_path
+# gensandbox_common_names  # need vsnprintf SimProcedure (currently a stub)
+gensandbox_drive_size  # hacked
+gensandbox_drive_size2  # hacked
+gensandbox_sleep_patched
+gensandbox_one_cpu  # don't think it's possible to patch it (symbolic indirection)
+gensandbox_one_cpu_GetSystemInfo  # correctly constrained num processors, return value might still be conditional bc it doesn't affect control flow
+gensandbox_less_than_onegb  # correctly constrained available ram, return value might still be conditional bc it doesn't affect control flow
+gensandbox_uptime
+gensandbox_IsNativeVhdBoot
+
+# Hooks detection
+check_hook_DeleteFileW_m1
+check_hook_ShellExecuteExW_m1
+check_hook_CreateProcessA_m1
+
+# Sandboxie detection tricks
+sboxie_detect_sbiedll
+
+ Wine detection tricks
+wine_detect_get_unix_file_name
+wine_reg_key1
+
+# VirtualBox detection tricks
+vbox_reg_key1
+vbox_reg_key2
+vbox_reg_key3
+vbox_reg_key4
+vbox_reg_key5
+vbox_reg_key7
+vbox_reg_key8
+vbox_reg_key9
+vbox_reg_key10
+vbox_sysfile1
+vbox_sysfile2
+vbox_mac
+vbox_devices
+vbox_traywindow
+vbox_network_share
+vbox_processes  # hacked
+vbox_wmi_devices  # huge overkill to implement, actually fails by itself
+
 # VMWare detection tricks
-#vmware_reg_key1
-#vmware_reg_key2
-#vmware_sysfile1
-#vmware_sysfile2
-#vmware_mac
-#vmware_adapter_name
-#vmware_devices
-#vmware_wmi_serial  # huge overkill to implement, actually fails by itself
+vmware_reg_key1
+vmware_reg_key2
+vmware_sysfile1
+vmware_sysfile2
+vmware_mac
+# vmware_adapter_name  # needs auxiliary string conversion functions
+vmware_devices
+vmware_wmi_serial  # huge overkill to implement, actually fails by itself
 
 # Qemu detection tricks
 qemu_reg_key1

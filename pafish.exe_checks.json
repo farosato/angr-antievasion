@@ -1,5 +1,37 @@
 [
     [
+        "vbox_reg_key1", 
+        4206291
+    ], 
+    [
+        "vmware_reg_key1", 
+        4210323
+    ], 
+    [
+        "vmware_reg_key2", 
+        4210463
+    ], 
+    [
+        "vmware_sysfile1", 
+        4210491
+    ], 
+    [
+        "vmware_sysfile2", 
+        4210511
+    ], 
+    [
+        "vmware_mac", 
+        4210531
+    ], 
+    [
+        "vmware_devices", 
+        4210656
+    ], 
+    [
+        "vmware_wmi_serial", 
+        4211096
+    ], 
+    [
         "qemu_reg_key1", 
         4211196
     ], 
@@ -26,9 +58,5 @@
     [
         "bochs_cpu_intel1", 
         4213494
-    ], 
-    [
-        "cuckoo_check_tls", 
-        4213251
     ]
 ]
