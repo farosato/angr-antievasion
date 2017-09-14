@@ -5,25 +5,40 @@ import pafish_models
 import logging
 import json
 from termcolor import colored
-# import msvcrt
 
 # CHECK_TABLE = [
-#     ('wine_reg_key1', 4210237),
+#     ('vbox_mac', 4207476),
 # ]
 
 
 def test():
-    logging.getLogger().setLevel(logging.WARNING)
-    logging.getLogger('angr.project').setLevel(logging.DEBUG)
-    # logging.getLogger('simuvex.procedures').setLevel(logging.DEBUG)
+    logging.getLogger('AngryPafish').setLevel(logging.INFO)
+    # logging.getLogger().setLevel(logging.WARNING)
+    # logging.getLogger('angr.project').setLevel(logging.DEBUG)
+    # logging.getLogger('angr.analyses.callee_cleanup_finder').setLevel(logging.INFO)
+    # logging.getLogger('angr.procedures').setLevel(logging.DEBUG)
     # logging.getLogger("cle.loader").setLevel(logging.DEBUG)
-    # logging.getLogger("simuvex.procedures.libc.memcmp").setLevel(logging.DEBUG)
+    # logging.getLogger("angr.procedures.libc.memcmp").setLevel(logging.DEBUG)
 
     # msvcrt.msvcrt_sim_procedures_monkey_patch()
 
-    proj = angr.Project('./pafish.exe', load_options={'auto_load_libs': True, 'case_insensitive': True})
+    proj = angr.Project('./pafish.exe', load_options={
+            'auto_load_libs': True,
+            'use_system_libs': False,
+            'case_insensitive': True,
+            'custom_ld_path': './windows_dlls',
+            'except_missing_libs': True,
+        }
+    )
 
-    # import IPython; IPython.embed()
+    # stub out imports
+    proj.analyses.CalleeCleanupFinder(hook_all=True)
+
+    # Alternative, expensive but exhaustive way to stub out all imports
+    # for obj in proj.loader.all_pe_objects:
+    #     # stub out all imports (by stubbing out each module exports)
+    #     export_addrs = [x.rebased_addr for x in obj._exports.values() if x.forwarder is None]
+    #     proj.analyses.CalleeCleanupFinder(starts=export_addrs, hook_all=True)
 
     pafish_models.hook_all(proj)
 

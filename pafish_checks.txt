@@ -30,7 +30,7 @@ check_hook_CreateProcessA_m1
 # Sandboxie detection tricks
 sboxie_detect_sbiedll
 
- Wine detection tricks
+# Wine detection tricks
 wine_detect_get_unix_file_name
 wine_reg_key1
 

@@ -1,17 +1,30 @@
+import copy
+
 import angr
 import angr.engines.vex.dirty as vex_dirtyhelpers
 from angr.state_plugins.plugin import SimStatePlugin
 import claripy
-
 from random import randint, getrandbits
+import logging
+
+l = logging.getLogger('AngryPafish')
 
 TICKS_PER_MS = 10000  # Windows TicksPerMillisecond = 10000
 MALWARE_STRINGS = ['malware', 'sample', 'virus']
 VM_STRINGS = ['vm', 'hgfs', 'vbox', 'virtualbox', 'sandboxie', 'sboxie', 'wine', 'qemu', 'bochs']
 API_HOOK_CHECKS = ['DeleteFileW', 'ShellExecuteExW', 'CreateProcessA']
 WHITELISTED_MODULES = ['kernel32.dll']
-BLACKLISTED_MODULES = ['sbiedll.dll', 'dbghelp.dll', 'api_log.dll', 'dir_watch.dll', 'pstorec.dll', 'vmcheck.dll', 'wpespy.dll']
+BLACKLISTED_MODULES = ['sbiedll.dll', 'dbghelp.dll', 'api_log.dll', 'dir_watch.dll', 'pstorec.dll', 'vmcheck.dll',
+                       'wpespy.dll']
 BLACKLISTED_SYMBOLS = ['IsWow64Process', 'IsNativeVhdBoot', 'wine_get_unix_file_name']
+SENSITIVE_KEYS = {
+    'HARDWARE\DESCRIPTION\SYSTEM': {'SYSTEMBIOSVERSION': '1',
+                                    'VIDEOBIOSVERSION': '1',
+                                    'SYSTEMBIOSDATE': '01/01/2018'},
+    'HARDWARE\DEVICEMAP\SCSI\SCSI PORT 0\SCSI BUS 0\TARGET ID 0\LOGICAL UNIT ID 0': {'IDENTIFIER': 'INTEL'},
+    'HARDWARE\DEVICEMAP\SCSI\SCSI PORT 1\SCSI BUS 0\TARGET ID 0\LOGICAL UNIT ID 0': {'IDENTIFIER': 'INTEL'},
+    'HARDWARE\DEVICEMAP\SCSI\SCSI PORT 2\SCSI BUS 0\TARGET ID 0\LOGICAL UNIT ID 0': {'IDENTIFIER': 'INTEL'},
+}
 
 VERBOSE = True
 
@@ -25,13 +38,15 @@ class SimStateParanoid(SimStatePlugin):
 
     def __init__(self):
         SimStatePlugin.__init__(self)
-        self.tsc = 15 * 1000 * 60 * TICKS_PER_MS  # init tick count ~= 15 minutes
+        self.tsc = 50 * 1000 * 60 * TICKS_PER_MS  # init tick count ~= 50 minutes
         self.last_error = 0  # should be thread-local, but angr does NOT currently support threads
+        self.open_regkeys = {}  # handle -> string id
 
     def copy(self):
         c = SimStateParanoid()
         c.tsc = self.tsc
         c.last_error = self.last_error
+        c.open_regkeys = self.open_regkeys.copy()  # shallow copy should be enough (handles don't change target)
         return c
 
 
@@ -39,31 +54,7 @@ class SimStateParanoid(SimStatePlugin):
 
 # Utilities
 
-class lstrcmpA(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 2
-
-    def run(self, lpString1, lpString2):
-        self.argument_types = {0: self.ty_ptr(angr.sim_type.SimTypeString()),
-                               1: self.ty_ptr(angr.sim_type.SimTypeString())}
-        self.return_type = angr.sim_type.SimTypeInt(32, True)
-
-        strcmp = self.inline_call(angr.SIM_PROCEDURES['libc']['strcmp'], lpString1, lpString2)
-        ret_expr = strcmp.ret_expr
-        global VERBOSE
-        if VERBOSE: print '{}: {}, {} => {}'.format(
-            self.__class__.__name__, lpString1, lpString2, ret_expr)
-        return ret_expr
-
-
 class lstrcmpiA(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 2
-
     def run(self, lpString1, lpString2):
         self.argument_types = {0: self.ty_ptr(angr.sim_type.SimTypeString()),
                                1: self.ty_ptr(angr.sim_type.SimTypeString())}
@@ -71,25 +62,21 @@ class lstrcmpiA(angr.SimProcedure):
 
         assert not self.state.solver.symbolic(lpString1)
         assert not self.state.solver.symbolic(lpString2)
+
         str1 = self.state.mem[self.state.solver.eval(lpString1)].string.concrete
         str_l1 = str1.lower()
         str2 = self.state.mem[self.state.solver.eval(lpString2)].string.concrete
         str_l2 = str2.lower()
         ret_expr = -1 if str_l1 < str_l2 else 1 if str_l1 > str_l2 else 0
-        global VERBOSE
-        if VERBOSE: print '{}: {} ({}), {} ({}) => {}'.format(
-            self.__class__.__name__, lpString1, str1, lpString2, str2, ret_expr)
+
+        l.info('{} @ {}: {} ({}), {} ({}) => {}'.format(
+            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            lpString1, str1, lpString2, str2, ret_expr))
         return ret_expr
 
 
 class SetLastError(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 1
-
     def run(self, dwErrCode):
-
         self.argument_types = {
             0: angr.sim_type.SimTypeInt(),
         }
@@ -98,35 +85,26 @@ class SetLastError(angr.SimProcedure):
 
         self.return_type = angr.sim_type.SimTypeInt()
 
-        global VERBOSE
-        if VERBOSE: print 'SetLastError: {} => void'.format(str(dwErrCode))
+        l.info('{} @ {}: {} => void'.format(
+            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            str(dwErrCode)))
         return
 
 
 class GetLastError(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 0
-
     def run(self):
-
         self.argument_types = {}
 
         self.return_type = angr.sim_type.SimTypeInt()
 
         ret_expr = self.state.paranoid.last_error
-        global VERBOSE
-        if VERBOSE: print 'GetLastError: => {}'.format(str(ret_expr))
+        l.info('{} @ {}: => {}'.format(
+            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            str(ret_expr)))
         return ret_expr
 
 
 class GetModuleHandleA(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 1
-
     def run(self, lpModuleName):
 
         self.argument_types = {
@@ -141,23 +119,17 @@ class GetModuleHandleA(angr.SimProcedure):
         if module_name.lower() in BLACKLISTED_MODULES:
             ret_expr = 0  # NULL, i.e. module not found
         else:
-            ret_expr = self.state.solver.BVS("retval_GetModuleHandle_{}".format(module_name), 32)
+            ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.__class__.__name__, module_name), 32)
             if module_name.lower() in WHITELISTED_MODULES:
                 self.state.solver.add(ret_expr != 0)
 
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {} ({}) => {}".format(
+        l.info("{} @ {}: {} ({}) => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(lpModuleName), module_name, str(ret_expr))
+            str(lpModuleName), module_name, str(ret_expr)))
         return ret_expr
 
 
 class GetProcAddress(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 2
-
     def run(self, hModule, lpProcName):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
@@ -177,23 +149,16 @@ class GetProcAddress(angr.SimProcedure):
             if sym_name in BLACKLISTED_SYMBOLS:
                 ret_expr = 0  # NULL, i.e. symbol not found
             else:
-                ret_expr = self.state.solver.BVS("retval_GetProcAddress_{}".format(sym_name), 32)
+                ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.__class__.__name__, sym_name), 32)
 
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {}, {} ({}) => {}".format(
+        l.info("{} @ {}: {}, {} ({}) => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(hModule), str(lpProcName), sym_name, str(ret_expr))
+            str(hModule), str(lpProcName), sym_name, str(ret_expr)))
         return ret_expr
 
 
 class IsWow64Process(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 2
-
     def run(self, hProcess, Wow64Process):
-
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
             1: self.ty_ptr(angr.sim_type.SimTypeInt()),
@@ -204,21 +169,14 @@ class IsWow64Process(angr.SimProcedure):
         assert not self.state.solver.symbolic(Wow64Process)
         self.state.memory.store(Wow64Process, self.state.solver.BVV(0, 32))  # always return FALSE
         ret_expr = 1  # success
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {}, {} => {}".format(
+        l.info("{} @ {}: {}, {} => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(hProcess), str(Wow64Process), str(ret_expr))
+            str(hProcess), str(Wow64Process), str(ret_expr)))
         return ret_expr
 
 
 class LocalAlloc(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 2
-
     def run(self, uFlags, uBytes):
-
         self.argument_types = {
             0: angr.sim_type.SimTypeInt(),
             1: angr.sim_type.SimTypeLength(),
@@ -246,8 +204,9 @@ class LocalAlloc(angr.SimProcedure):
                 self.state.memory.store(addr, self.state.solver.BVV(0, size * 8))
 
         ret_expr = addr
-        global VERBOSE
-        if VERBOSE: print "{}: {}, {} => {}".format(self.__class__.__name__, str(uFlags), str(uBytes), hex(ret_expr))
+        l.info("{} @ {}: {}, {} => {}".format(
+            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            str(uFlags), str(uBytes), hex(ret_expr)))
         return ret_expr
 
 
@@ -256,13 +215,7 @@ class GlobalAlloc(LocalAlloc):
 
 
 class LocalFree(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 1
-
     def run(self, hMem):
-
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
         }
@@ -270,9 +223,10 @@ class LocalFree(angr.SimProcedure):
         self.return_type = self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch))
 
         # just a stub, don't really need to free anything in the libc plugin
-        ret_expr = self.state.solver.Unconstrained(self.__class__.__name__, self.state.arch.bits)
-        global VERBOSE
-        if VERBOSE: print "{}: {} => {}".format(self.__class__.__name__, str(hMem), str(ret_expr))
+        ret_expr = self.state.solver.BVS("retval_{}".format(self.__class__.__name__), 32)
+        l.info("{} @ {}: {} => {}".format(
+            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            str(hMem), str(ret_expr)))
         return ret_expr
 
 
@@ -281,10 +235,6 @@ class GlobalFree(LocalFree):
 
 
 class GetFileAttributesA(angr.SimProcedure):
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 1
-
     def run(self, lpFileName):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeString()),
@@ -300,22 +250,18 @@ class GetFileAttributesA(angr.SimProcedure):
 
         if malware_related or vm_related:
             ret_expr = -1  # INVALID_FILE_ATTRIBUTES, i.e. file not found
+            self.state.paranoid.last_error = 0x2  # ERROR_FILE_NOT_FOUND
         else:
-            ret_expr = self.state.solver.BVS("retval_GetFileAttributes_{}".format(file_name), 32)
+            ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.__class__.__name__, file_name), 32)
 
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {} () => {}".format(
+        l.info("{} @ {}: {} () => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(lpFileName), file_name, str(ret_expr))
+            str(lpFileName), file_name, str(ret_expr)))
         return ret_expr
 
 
 class RegOpenKeyExA(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 5
-
+    #
     def run(self, hKey, lpSubKey, ulOptions, samDesired, phkResult):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
@@ -328,31 +274,78 @@ class RegOpenKeyExA(angr.SimProcedure):
         self.return_type = angr.sim_type.SimTypeLong()
 
         assert not self.state.solver.symbolic(lpSubKey)
-        regkey_name = self.state.mem[self.state.solver.eval(lpSubKey)].string.concrete
+        assert not self.state.solver.symbolic(phkResult)
+
+        regkey_name = self.state.mem[self.state.solver.eval(lpSubKey)].string.concrete.upper()
 
         vm_related = any(vm_str in regkey_name.lower() for vm_str in VM_STRINGS)
 
         if vm_related:
             ret_expr = 2  # ERROR_FILE_NOT_FOUND
         else:
-            assert not self.state.solver.symbolic(phkResult)
-            self.state.memory.store(phkResult, self.state.solver.BVS("handle_RegOpenKeyEx_{}".format(regkey_name), 32),
-                                    endness=self.arch.memory_endness)
-            ret_expr = self.state.solver.BVS("retval_RegOpenKeyEx_{}".format(regkey_name), 32)
+            handle = self.state.solver.BVS("handle_{}_{}".format(self.__class__.__name__, regkey_name), 32)
+            if regkey_name in SENSITIVE_KEYS:
+                # common key, so we always succeed in opening it
+                self.state.memory.store(phkResult, handle, endness=self.arch.memory_endness)
+                self.state.paranoid.open_regkeys[handle] = regkey_name
+                ret_expr = 0  # ERROR_SUCCESS
+            else:
+                # state forking (hackish way of doing it): we either...
+                old_state = self.state
 
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {}, {} ({}), {}, {}, {} => {}".format(
+                # succeed in opening the key
+                success_state = old_state.copy()
+                self.state = success_state
+                self.state.paranoid.open_regkeys[handle] = regkey_name
+                self.state.memory.store(phkResult, handle, endness=self.arch.memory_endness)
+                l.info("{} @ {}: {}, {} ({}), {}, {}, {} => {}".format(
+                    self.__class__.__name__,
+                    self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+                    str(hKey), str(lpSubKey), regkey_name, str(ulOptions), str(samDesired), str(phkResult), 0))
+                self.ret(0)  # ERROR_SUCCESS
+
+                # or fail
+                fail_state = old_state.copy()
+                self.state = fail_state
+                ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.__class__.__name__, regkey_name), 32)
+                self.state.solver.add(ret_expr != 0)
+                l.info("{} @ {}: {}, {} ({}), {}, {}, {} => {}".format(
+                    self.__class__.__name__,
+                    self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+                    str(hKey), str(lpSubKey), regkey_name, str(ulOptions), str(samDesired), str(phkResult), 0))
+                self.ret(ret_expr)
+
+                # N.B. we can't just return the alternative ret_expr because of the way ret is implemented,
+                # do NOT "optimize", we need to invoke ret explicitly for both states
+                return
+
+        l.info("{} @ {}: {}, {} ({}), {}, {}, {} => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(hKey), str(lpSubKey), regkey_name, str(ulOptions), str(samDesired), str(phkResult), str(ret_expr))
+            str(hKey), str(lpSubKey), regkey_name, str(ulOptions), str(samDesired), str(phkResult), str(ret_expr)))
+        return ret_expr
+
+
+class RegCloseKey(angr.SimProcedure):
+    def run(self, hKey):
+
+        self.argument_types = {
+            0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
+        }
+
+        self.return_type = angr.sim_type.SimTypeLong()
+
+        assert hKey in self.state.paranoid.open_regkeys
+
+        self.state.paranoid.open_regkeys.pop(hKey, None)
+        ret_expr = 1  # success
+
+        l.info('{} @ {}: {} => {}'.format(
+            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            str(hKey), ret_expr))
         return ret_expr
 
 
 class RegQueryValueExA(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 6
-
     def run(self, hKey, lpValueName, lpReserved, lpType, lpData, lpcbData):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
@@ -365,59 +358,43 @@ class RegQueryValueExA(angr.SimProcedure):
 
         self.return_type = angr.sim_type.SimTypeLong()
 
+
+        assert not self.state.solver.symbolic(lpValueName)
         assert not self.state.solver.symbolic(lpData)
         assert not self.state.solver.symbolic(lpcbData)
-        if self.state.solver.eval(lpData) != 0:  # not NULL
-            size = self.state.mem[self.state.solver.eval(lpcbData)].int.concrete
-            data_str = "These aren't the droids you're looking for."[:size-1] + '\0'
-            data = self.state.solver.BVV(data_str)
-            self.state.memory.store(lpData, data)
-            self.state.memory.store(lpcbData, self.state.solver.BVV(len(data_str), 32), endness=self.arch.memory_endness)
+        assert hKey in self.state.paranoid.open_regkeys
 
-        ret_expr = 1
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {}, {}, {}, {}, {} ({}), {} => {}".format(
+        regkey_name = self.state.paranoid.open_regkeys[hKey]
+        value_name = self.state.mem[self.state.solver.eval(lpValueName)].string.concrete.upper()
+        buffer_size = self.state.mem[self.state.solver.eval(lpcbData)].int.concrete
+        data_str = None
+
+        if regkey_name in SENSITIVE_KEYS and value_name in SENSITIVE_KEYS[regkey_name]:
+            if self.state.solver.eval(lpData) != 0:  # i.e. not NULL
+                data_str = SENSITIVE_KEYS[regkey_name][value_name][:buffer_size - 1] + '\0'
+                data = self.state.solver.BVV(data_str)
+                self.state.memory.store(lpData, data)
+                self.state.memory.store(lpcbData, self.state.solver.BVV(len(data_str), 32),
+                                        endness=self.arch.memory_endness)
+            ret_expr = 1
+        else:
+            if self.state.solver.eval(lpData) != 0:  # i.e. not NULL
+                data = self.state.solver.BVS('value_{}_{}_{}'.format(
+                    self.__class__.__name__, regkey_name, value_name), buffer_size*8)
+                self.state.memory.store(lpData, data)
+                size = self.state.solver.BVS('size_{}_{}_{}'.format(
+                    self.__class__.__name__, regkey_name, value_name), 32)
+                self.state.memory.store(lpcbData, size, endness=self.arch.memory_endness)
+            ret_expr = self.state.solver.BVS('retval_{}_{}_{}'.format(
+                self.__class__.__name__, regkey_name, value_name), 32)
+        l.info("{} @ {}: {}, {}, {}, {}, {}, {} => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(hKey), str(lpValueName),  str(lpReserved), str(lpType),
-            str(lpData), data_str, str(lpcbData), str(ret_expr))
-        return ret_expr
-
-
-class MessageBoxA(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 4
-
-    def run(self, hWnd, lpText, lpCaption, uType):
-        self.argument_types = {0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
-                               1: self.ty_ptr(angr.sim_type.SimTypeString()),
-                               2: self.ty_ptr(angr.sim_type.SimTypeString()),
-                               3: angr.sim_type.SimTypeInt()}
-
-        self.return_type = angr.sim_type.SimTypeInt()
-
-        assert not self.state.solver.symbolic(lpText)
-        assert not self.state.solver.symbolic(lpCaption)
-
-        lpText_str = self.state.mem[self.state.solver.eval(lpText)].string.concrete
-        lpCaption_str = self.state.mem[self.state.solver.eval(lpCaption)].string.concrete
-
-        ret_expr = self.state.solver.BVS("retval_MessageBoxA", 32);
-        self.state.solver.add(ret_expr != 0)
-
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {} ({}), {} ({}) => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            lpText, lpText_str, lpCaption, lpCaption_str, str(ret_expr))
+            str(hKey), str(lpValueName), str(lpReserved), str(lpType),
+            str(lpData) + (" ({})".format(data_str) if data_str else ""), str(lpcbData), str(ret_expr)))
         return ret_expr
 
 
 class GetCurrentProcess(angr.SimProcedure):
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 0
-
     def run(self, ):
         self.argument_types = {
         }
@@ -425,43 +402,29 @@ class GetCurrentProcess(angr.SimProcedure):
         self.return_type = self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch))
 
         ret_expr = -1  # special constant that is interpreted as the current process handle
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: => {}".format(
+        l.info("{} @ {}: => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(ret_expr))
+            str(ret_expr)))
         return ret_expr
 
 
 # Debuggers detection
 
 class IsDebuggerPresent(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 0
-
     def run(self):
-
         self.argument_types = {}
 
         self.return_type = angr.sim_type.SimTypeInt()
 
         ret_expr = 0  # always return false
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: => {}".format(
+        l.info("{} @ {}: => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(ret_expr))
+            str(ret_expr)))
         return ret_expr
 
 
 class OutputDebugStringA(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 1
-
     def run(self, lpOutputString):
-
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeString()),
         }
@@ -470,18 +433,13 @@ class OutputDebugStringA(angr.SimProcedure):
 
         self.return_type = angr.sim_type.SimTypeInt()
 
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {} => void".format(
+        l.info("{} @ {}: {} => void".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(lpOutputString))
+            str(lpOutputString)))
         return
 
 
 class CheckRemoteDebuggerPresent(angr.SimProcedure):
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 2
-
     def run(self, hProcess, pbDebuggerPresent):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
@@ -492,10 +450,9 @@ class CheckRemoteDebuggerPresent(angr.SimProcedure):
         assert not self.state.solver.symbolic(pbDebuggerPresent)
         self.state.memory.store(pbDebuggerPresent, self.state.solver.BVV(0, 32))  # always return FALSE
         ret_expr = 1  # success
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {}, {} => {}".format(
+        l.info("{} @ {}: {}, {} => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(hProcess), str(pbDebuggerPresent), str(ret_expr))
+            str(hProcess), str(pbDebuggerPresent), str(ret_expr)))
         return ret_expr
 
 
@@ -505,19 +462,14 @@ def rdtsc_hook(state):
     state.paranoid.tsc += 500  # magic number (pafish detects if consecutive runs diff is between 0 and 750)
     return state.solver.BVV(state.paranoid.tsc, 64), []
 
+
 # CPUID based detection tricks don't need any handling (angr.dirty helper emulates a real cpu info)
 
 
 # Generic sandbox detection
 
 class GetCursorPos(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 1
-
     def run(self, lpPoint):
-
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
         }
@@ -526,23 +478,17 @@ class GetCursorPos(angr.SimProcedure):
         y = self.state.solver.BVV(randint(0, 300), 32)
 
         self.state.memory.store(lpPoint, x, endness=self.arch.memory_endness)
-        self.state.memory.store(lpPoint+4, y, endness=self.arch.memory_endness)
+        self.state.memory.store(lpPoint + 4, y, endness=self.arch.memory_endness)
 
         self.return_type = angr.sim_type.SimTypeInt()
         ret_expr = 1
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {} ({}, {}) => {}".format(
+        l.info("{} @ {}: {} ({}, {}) => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(lpPoint), x, y, str(ret_expr))
+            str(lpPoint), x, y, str(ret_expr)))
         return ret_expr
 
 
 class GetUserNameA(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 2
-
     def run(self, lpBuffer, lpnSize):
 
         self.argument_types = {
@@ -557,25 +503,19 @@ class GetUserNameA(angr.SimProcedure):
             assert not self.state.solver.symbolic(lpnSize)
             size_ptr = self.state.solver.eval(lpnSize)
             size = self.state.mem[size_ptr].int.concrete  # assuming lpcbData is not null
-            user_str = "AngryPafish"[:size-1] + '\0'
+            user_str = "AngryPafish"[:size - 1] + '\0'
             user = self.state.solver.BVV(user_str)
             self.state.memory.store(lpBuffer, user)
             self.state.memory.store(lpnSize, self.state.solver.BVV(len(user_str), 32), endness=self.arch.memory_endness)
 
         ret_expr = 1
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {} ({}), {} => {}".format(
+        l.info("{} @ {}: {} ({}), {} => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(lpBuffer), user_str, str(lpnSize), str(ret_expr))
+            str(lpBuffer), user_str, str(lpnSize), str(ret_expr)))
         return ret_expr
 
 
 class GetModuleFileNameA(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 3
-
     def run(self, hModule, lpFilename, nSize):
 
         self.argument_types = {
@@ -590,29 +530,25 @@ class GetModuleFileNameA(angr.SimProcedure):
         assert not self.state.solver.symbolic(lpFilename)
         assert not self.state.solver.symbolic(nSize)
         size = self.state.solver.eval(nSize)
+        path_str = None
         if self.state.solver.eval(hModule) == 0:  # NULL, retrieve path of the exe of the current process
-            path_str = "C:\\AngryPafish"[:size-1] + '\0'
+            path_str = "C:\\AngryPafish"[:size - 1] + '\0'
             path = self.state.solver.BVV(path_str)
             self.state.memory.store(lpFilename, path)
             ret_expr = len(path_str)
         else:
-            self.state.memory.store(lpFilename, self.state.solver.BVS("filename_GetModuleFileName", size * 8))
-            ret_expr = self.state.solver.BVS("retval_GetModuleFileName", 32)
+            self.state.memory.store(lpFilename,
+                                    self.state.solver.BVS("filename_{}".format(self.__class__.__name__), size * 8))
+            ret_expr = self.state.solver.BVS("retval_{}".format(self.__class__.__name__), 32)
 
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {}, {}, {} => {}".format(
+        l.info("{} @ {}: {}, {}, {} => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(hModule), str(lpFilename) + (" ({})".format(path_str) if path_str in vars() else ""),
-            str(nSize), str(ret_expr))
+            str(hModule), str(lpFilename) + (" ({})".format(path_str) if path_str else ""),
+            str(nSize), str(ret_expr)))
         return ret_expr
 
 
 class GetLogicalDriveStringsA(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 2
-
     def run(self, nBufferLength, lpBuffer):
 
         self.argument_types = {
@@ -626,6 +562,7 @@ class GetLogicalDriveStringsA(angr.SimProcedure):
         assert not self.state.solver.symbolic(nBufferLength)
         drives_str = "C:\\"
 
+        data = None
         if self.state.solver.eval(nBufferLength) >= len(drives_str):  # nBufferLength does NOT include terminating null
             data = self.state.solver.BVV(drives_str + '\0')
             self.state.memory.store(lpBuffer, data)
@@ -633,20 +570,15 @@ class GetLogicalDriveStringsA(angr.SimProcedure):
             pass  # return the required buffer size to store it all
 
         ret_expr = len(drives_str)
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {}, {} => {}".format(
+        l.info("{} @ {}: {}, {} => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(nBufferLength), str(lpBuffer) + (" ({})".format(data) if data in vars() else ""), str(ret_expr))
+            str(nBufferLength), str(lpBuffer) + (" ({})".format(data) if data else ""), str(ret_expr)))
         return ret_expr
 
 
 class CreateFileA(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 7
-
-    def run(self, lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile):
+    def run(self, lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition,
+            dwFlagsAndAttributes, hTemplateFile):
 
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeString()),
@@ -663,31 +595,61 @@ class CreateFileA(angr.SimProcedure):
         assert not self.state.solver.symbolic(lpFileName)
         assert not self.state.solver.symbolic(dwDesiredAccess)
         file_name = self.state.mem[self.state.solver.eval(lpFileName)].string.concrete
-        ret_expr = self.state.solver.BVS("retval_CreateFile_{}".format(file_name), 32)
+        ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.__class__.__name__, file_name), 32)
 
         access = self.state.solver.eval(dwDesiredAccess)
         if access & 0x80000000:  # GENERIC_READ
             vm_related = any(vm_str in file_name.lower() for vm_str in VM_STRINGS)
             if vm_related:
                 ret_expr = -1  # INVALID_HANDLE_VALUE
+                self.state.paranoid.last_error = 0x2  # ERROR_FILE_NOT_FOUND
+            elif file_name == '\\\\.\\PhysicalDrive0':
+                self.state.solver.add(ret_expr != -1)  # valid handle
 
-        if file_name == '\\\\.\\PhysicalDrive0':  # gensandbox_drive_size hack
-            ret_expr = -1  # INVALID_HANDLE_VALUE
-
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {} ({}), {}, {}, {}, {}, {}, {} => {}".format(
+        l.info("{} @ {}: {} ({}), {}, {}, {}, {}, {}, {} => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(lpFileName), file_name, str(dwDesiredAccess), str(dwShareMode), str(lpSecurityAttributes),
-            str(dwCreationDisposition), str(dwFlagsAndAttributes), str(hTemplateFile), str(ret_expr))
+            str(dwCreationDisposition), str(dwFlagsAndAttributes), str(hTemplateFile), str(ret_expr)))
+        return ret_expr
+
+
+class DeviceIoControl(angr.SimProcedure):
+    def run(self, hDevice, dwIoControlCode, lpInBuffer, nInBufferSize, lpOutBuffer, nOutBufferSize, lpBytesReturned,
+            lpOverlapped):
+
+        self.argument_types = {
+            0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
+            1: angr.sim_type.SimTypeInt(),
+            2: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
+            3: angr.sim_type.SimTypeInt(),
+            4: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
+            5: angr.sim_type.SimTypeInt(),
+            6: self.ty_ptr(angr.sim_type.SimTypeInt()),
+            7: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
+        }
+
+        self.return_type = angr.sim_type.SimTypeInt()
+
+        assert not self.state.solver.symbolic(dwIoControlCode)
+        ret_expr = self.state.solver.BVS("retval_{}".format(self.__class__.__name__), 32)
+        control_code = self.state.solver.eval(dwIoControlCode)
+        if self.state.solver.symbolic(hDevice) and 'PhysicalDrive0' in hDevice.args[0] and control_code == 0x7405c:
+            # IOCTL_DISK_GET_LENGTH_INFO on PhysicalDrive0: return properly configured data
+            assert not self.state.solver.symbolic(lpOutBuffer)
+            assert not self.state.solver.symbolic(nOutBufferSize)
+            assert self.state.solver.eval(nOutBufferSize) >= 8  # the buffer can fit the GET_LENGTH_INFO struct
+            getlengthinfo_struct = self.state.solver.BVV(128 * 2 ** 30, 8 * 8)  # drive size = 128 GB
+            self.state.memory.store(lpOutBuffer, getlengthinfo_struct, endness=self.arch.memory_endness)
+            ret_expr = 1  # success
+
+        l.info("{} @ {}: {}, {}, {}, {}, {}, {}, {}, {} => {}".format(
+            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            str(hDevice), str(dwIoControlCode), str(lpInBuffer), str(nInBufferSize), str(lpOutBuffer),
+            str(nOutBufferSize), str(lpBytesReturned), str(lpOverlapped), str(ret_expr)))
         return ret_expr
 
 
 class GetDiskFreeSpaceExA(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 4
-
     def run(self, lpDirectoryName, lpFreeBytesAvailable, lpTotalNumberOfBytes, lpTotalNumberOfFreeBytes):
 
         self.argument_types = {
@@ -699,20 +661,21 @@ class GetDiskFreeSpaceExA(angr.SimProcedure):
 
         self.return_type = angr.sim_type.SimTypeInt()
 
-        ret_expr = 0  # fail the call (hack)
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {}, {}, {}, {} => {}".format(
+        assert not self.state.solver.symbolic(lpTotalNumberOfBytes)
+        ret_expr = self.state.solver.BVS("retval_{}".format(self.__class__.__name__), 32)
+        if self.state.solver.eval(lpTotalNumberOfBytes) != 0:  # not NULL
+            getlengthinfo_struct = self.state.solver.BVV(128 * 2 ** 30, 8 * 8)  # drive size = 128 GB
+            self.state.memory.store(lpTotalNumberOfBytes, getlengthinfo_struct, endness=self.arch.memory_endness)
+            ret_expr = 1  # success
+
+        l.info("{} @ {}: {}, {}, {}, {} => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(lpDirectoryName), str(lpFreeBytesAvailable), str(lpTotalNumberOfBytes),
-            str(lpTotalNumberOfFreeBytes), str(ret_expr))
+            str(lpTotalNumberOfFreeBytes), str(ret_expr)))
         return ret_expr
 
 
 class Sleep(angr.SimProcedure):
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 1
-
     def run(self, dwMilliseconds):
         self.argument_types = {
             0: angr.sim_type.SimTypeInt(),
@@ -722,21 +685,14 @@ class Sleep(angr.SimProcedure):
 
         self.state.paranoid.tsc += dwMilliseconds.args[0] * TICKS_PER_MS
 
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {} => void".format(
+        l.info("{} @ {}: {} => void".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(dwMilliseconds))
+            str(dwMilliseconds)))
         return
 
 
 class GetTickCount(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 0
-
     def run(self, ):
-
         self.argument_types = {}
 
         self.return_type = angr.sim_type.SimTypeInt()
@@ -744,18 +700,13 @@ class GetTickCount(angr.SimProcedure):
         self.state.paranoid.tsc += TICKS_PER_MS  # increase it just to be on the safe side
 
         ret_expr = self.state.paranoid.tsc // TICKS_PER_MS
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: => {}".format(
+        l.info("{} @ {}: => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(ret_expr))
+            str(ret_expr)))
         return ret_expr
 
 
 class GetSystemInfo(angr.SimProcedure):
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 1
-
     def run(self, lpSystemInfo):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
@@ -763,29 +714,24 @@ class GetSystemInfo(angr.SimProcedure):
 
         self.return_type = angr.sim_type.SimTypeInt()
 
-        sysinfo_struct = self.state.solver.BVS('SYSTEM_INFO', 36*8)
+        sysinfo_struct = self.state.solver.BVS('SYSTEM_INFO', 36 * 8)
         self.state.memory.store(lpSystemInfo, sysinfo_struct)
-        dwNumberOfProcessors = sysinfo_struct.get_bytes(20, 4)
+        dwNumberOfProcessors = self.state.solver.BVS('dwNumberOfProcessors', 4 * 8)
         self.state.solver.add(claripy.UGE(dwNumberOfProcessors, 2))  # dwNumberOfProcessors >= 2
-        self.state.memory.store(lpSystemInfo+20, dwNumberOfProcessors)
+        self.state.memory.store(lpSystemInfo + 20, dwNumberOfProcessors)
         # Note: the value is correctly constrained, still angr doesn't seem to be aware of it.
         # This is because angr only checks satisfiability for branches that affect control flow.
         # Because of the particular structure of the gensandbox_one_cpu_GetSystemInfo check,
         # i.e. return siSysInfo.dwNumberOfProcessors < 2 ? TRUE : FALSE;
         # the branch does not affect control flow and thus the return value remains conditional.
 
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {} => void".format(
+        l.info("{} @ {}: {} => void".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(lpSystemInfo))
+            str(lpSystemInfo)))
         return
 
 
 class GlobalMemoryStatusEx(angr.SimProcedure):
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 1
-
     def run(self, lpBuffer):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
@@ -793,17 +739,15 @@ class GlobalMemoryStatusEx(angr.SimProcedure):
 
         self.return_type = angr.sim_type.SimTypeInt()
 
-        memstatus_struct = self.state.solver.BVS('MEMORYSTATUSEX', 68*8)  # dwLength is concrete
-        self.state.memory.store(lpBuffer+4, memstatus_struct)
-        ullTotalPhys = memstatus_struct.get_bytes(8, 8)
-        self.state.solver.add(claripy.UGE(ullTotalPhys, 2**30))  # ullTotalPhys >= 1 GB
-        self.state.memory.store(lpBuffer+8, ullTotalPhys, endness=self.arch.memory_endness)
+        memstatus_struct = self.state.solver.BVS('MEMORYSTATUSEX', 68 * 8)  # dwLength is concrete
+        self.state.memory.store(lpBuffer + 4, memstatus_struct)  # ignore dwLength field
+        ullTotalPhys = self.state.solver.BVV(8 * 2 ** 30, 8 * 8)
+        self.state.memory.store(lpBuffer + 8, ullTotalPhys, endness=self.arch.memory_endness)
 
         ret_expr = 1
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {} => {}".format(
+        l.info("{} @ {}: {} => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(lpBuffer), str(ret_expr))
+            str(lpBuffer), str(ret_expr)))
         return ret_expr
 
 
@@ -816,11 +760,6 @@ class GlobalMemoryStatusEx(angr.SimProcedure):
 # VirtualBox detection tricks
 
 class GetAdaptersAddresses(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 5
-
     def run(self, Family, Flags, Reserved, AdapterAddresses, SizePointer):
 
         self.argument_types = {
@@ -838,32 +777,33 @@ class GetAdaptersAddresses(angr.SimProcedure):
             # insert 0x90 (i.e. sizeof(IP_ADAPTER_ADDRESSES)) in SizePointer
             self.state.memory.store(SizePointer, self.state.solver.BVV(0x90, 32), endness=self.arch.memory_endness)
             ret_expr = 0x6F  # return 0x6F (i.e. ERROR_BUFFER_OVERFLOW)
-        else:  # return a single random address (assuming function has been correctly invoked and space allocated)
+        else:
+            # return a single random address (assuming function has been correctly invoked and space allocated)
             adapter_struct = self.state.solver.BVS('IP_ADAPTER_ADDRESSES', 0x90 * 8)
             self.state.memory.store(AdapterAddresses, adapter_struct)
             # concretize relevant fields
             PhysicalAddressLength = AdapterAddresses + 52
-            self.state.memory.store(PhysicalAddressLength, self.state.solver.BVV(6, 32), endness=self.arch.memory_endness)
+            self.state.memory.store(PhysicalAddressLength, self.state.solver.BVV(6, 32),
+                                    endness=self.arch.memory_endness)
             PhysicalAddress = AdapterAddresses + 44
             for i in range(6):  # generate random mac
                 self.state.memory.store(PhysicalAddress + i, self.state.solver.BVV(getrandbits(8), 8))
             Next = AdapterAddresses + 8
             self.state.memory.store(Next, self.state.solver.BVV(0, 32))
+            Description = AdapterAddresses + 36
+            lp_description = self.inline_call(LocalAlloc, 0x0040, 128).ret_expr  # allocate space for the wstring
+            description = self.state.solver.BVV('Intel(R) Gigabit Network Connection\0'.encode('utf-16'))  # wchar string
+            self.state.memory.store(lp_description, description)
+            self.state.memory.store(Description, lp_description, endness=self.arch.memory_endness)
             ret_expr = 0  # NO_ERROR
 
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {}, {}, {}, {}, {} => {}".format(
+        l.info("{} @ {}: {}, {}, {}, {}, {} => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(Family), str(Flags), str(Reserved), str(AdapterAddresses), str(SizePointer), str(ret_expr))
+            str(Family), str(Flags), str(Reserved), str(AdapterAddresses), str(SizePointer), str(ret_expr)))
         return ret_expr
 
 
-class FindWindow(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 2
-
+class FindWindowA(angr.SimProcedure):
     def run(self, lpClassName, lpWindowName):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeString()),
@@ -887,21 +827,16 @@ class FindWindow(angr.SimProcedure):
         if vm_related_class_name or vm_related_win_name:
             ret_expr = 0  # NULL, i.e. not found
         else:
-            ret_expr = self.state.solver.BVS("retval_FindWindow_{}_{}".format(class_name, win_name), 32)
+            ret_expr = self.state.solver.BVS("retval_{}_{}_{}".format(self.__class__.__name__, class_name, win_name),
+                                             32)
 
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {} ({}), {} ({}) => {}".format(
+        l.info("{} @ {}: {} ({}), {} ({}) => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(lpClassName), class_name, str(lpWindowName), win_name, str(ret_expr))
+            str(lpClassName), class_name, str(lpWindowName), win_name, str(ret_expr)))
         return ret_expr
 
 
 class WNetGetProviderNameA(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 3
-
     def run(self, dwNetType, lpProviderName, lpBufferSize):
         self.argument_types = {
             0: angr.sim_type.SimTypeInt(),
@@ -921,22 +856,17 @@ class WNetGetProviderNameA(angr.SimProcedure):
             self.state.memory.store(lpProviderName, name)
             ret_expr = 0  # NO_ERROR
         else:
-            self.state.memory.store(lpProviderName, self.state.solver.BVS("provider_name_WNetGetProviderName", size * 8))
-            ret_expr = self.state.solver.BVS("retval_WNetGetProviderName", 32)
+            self.state.memory.store(lpProviderName,
+                                    self.state.solver.BVS("provider_name_{}".format(self.__class__.__name__), size * 8))
+            ret_expr = self.state.solver.BVS("retval_{}".format(self.__class__.__name__), 32)
 
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {}, {}, {} => {}".format(
+        l.info("{} @ {}: {}, {}, {} => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(dwNetType), str(lpProviderName), str(lpBufferSize), str(ret_expr))
+            str(dwNetType), str(lpProviderName), str(lpBufferSize), str(ret_expr)))
         return ret_expr
 
 
 class CreateToolhelp32Snapshot(angr.SimProcedure):
-
-    def execute(self, state, successors=None, arguments=None, ret_to=None):
-        super(self.__class__, self).execute(state, successors, arguments, ret_to)
-        state.regs.esp += 4 * 2
-
     def run(self, dwFlags, th32ProcessID):
         self.argument_types = {
             0: angr.sim_type.SimTypeInt(),
@@ -950,12 +880,11 @@ class CreateToolhelp32Snapshot(angr.SimProcedure):
         if flags & 0x00000002:  # TH32CS_SNAPPROCESS, to enumerate processes
             ret_expr = -1  # INVALID_HANDLE_VALUE
         else:
-            ret_expr = self.state.solver.BVS("retval_CreateToolhelp32Snapshot", 32)
+            ret_expr = self.state.solver.BVS("retval_{}".format(self.__class__.__name__), 32)
 
-        global VERBOSE
-        if VERBOSE: print "{} @ {}: {}, {} => {}".format(
+        l.info("{} @ {}: {}, {} => {}".format(
             self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(dwFlags), str(th32ProcessID), str(ret_expr))
+            str(dwFlags), str(th32ProcessID), str(ret_expr)))
         return ret_expr
 
 
@@ -967,53 +896,47 @@ def rdtsc_monkey_patch():
 
 
 def hook_all(proj):
-    # Utilities
-    proj.hook_symbol("lstrcmpA", lstrcmpA())
-    proj.hook_symbol("lstrcmpiA", lstrcmpiA())
-    proj.hook_symbol("SetLastError", SetLastError())
-    proj.hook_symbol("GetLastError", GetLastError())
-    proj.hook_symbol("IsWow64Process", IsWow64Process())
-    proj.hook_symbol("LocalAlloc", LocalAlloc())
-    proj.hook_symbol("GlobalAlloc", GlobalAlloc())
-    proj.hook_symbol("LocalFree", LocalFree())
-    proj.hook_symbol("GlobalFree", GlobalFree())
-    proj.hook_symbol("GetFileAttributesA", GetFileAttributesA())
-    proj.hook_symbol("RegOpenKeyExA", RegOpenKeyExA())
-    proj.hook_symbol("RegQueryValueExA", RegQueryValueExA())
-    proj.hook_symbol("MessageBoxA", MessageBoxA())
-    proj.hook_symbol("GetCurrentProcess", GetCurrentProcess())
+    api_hooks = [
+        lstrcmpiA,
+        SetLastError,
+        GetLastError,
+        IsWow64Process,
+        LocalAlloc,
+        LocalFree,
+        GlobalAlloc,
+        GlobalFree,
+        GetFileAttributesA,
+        RegOpenKeyExA,
+        RegCloseKey,
+        RegQueryValueExA,
+        GetCurrentProcess,
+        IsDebuggerPresent,
+        OutputDebugStringA,
+        CheckRemoteDebuggerPresent,
+        GetCursorPos,
+        GetUserNameA,
+        GetModuleFileNameA,
+        GetLogicalDriveStringsA,
+        CreateFileA,
+        DeviceIoControl,
+        GetDiskFreeSpaceExA,
+        GetTickCount,
+        Sleep,
+        GetSystemInfo,
+        GlobalMemoryStatusEx,
+        GetModuleHandleA,
+        GetProcAddress,
+        GetAdaptersAddresses,
+        FindWindowA,
+        WNetGetProviderNameA,
+        CreateToolhelp32Snapshot,
+    ]
 
-    # Debuggers detection
-    proj.hook_symbol("IsDebuggerPresent", IsDebuggerPresent())
-    proj.hook_symbol("OutputDebugStringA", OutputDebugStringA())
-    proj.hook_symbol("CheckRemoteDebuggerPresent", CheckRemoteDebuggerPresent())
+    from angr.calling_conventions import SimCCStdcall
+    for sim_proc in api_hooks:
+        proj.hook_symbol(sim_proc.__name__, sim_proc(cc=SimCCStdcall(proj.arch)))
 
-    # CPU info based detection
     rdtsc_monkey_patch()
-
-    # Generic sandbox detection
-    proj.hook_symbol("GetCursorPos", GetCursorPos())
-    proj.hook_symbol("GetUserNameA", GetUserNameA())
-    proj.hook_symbol("GetModuleFileNameA", GetModuleFileNameA())
-    proj.hook_symbol("GetLogicalDriveStringsA", GetLogicalDriveStringsA())
-    proj.hook_symbol("CreateFileA", CreateFileA())
-    proj.hook_symbol("GetDiskFreeSpaceExA", GetDiskFreeSpaceExA())
-    proj.hook_symbol("GetTickCount", GetTickCount())
-    proj.hook_symbol("Sleep", Sleep())
-    proj.hook_symbol("GetSystemInfo", GetSystemInfo())
-    proj.hook_symbol("GlobalMemoryStatusEx", GlobalMemoryStatusEx())
-
-    # Sandboxie detection tricks
-    proj.hook_symbol("GetModuleHandleA", GetModuleHandleA())
-
-    # Wine detection tricks
-    proj.hook_symbol("GetProcAddress", GetProcAddress())
-
-    # Virtualbox detection tricks
-    proj.hook_symbol("GetAdaptersAddresses", GetAdaptersAddresses())
-    proj.hook_symbol("FindWindowA", FindWindow())
-    proj.hook_symbol("WNetGetProviderNameA", WNetGetProviderNameA())
-    proj.hook_symbol("CreateToolhelp32Snapshot", CreateToolhelp32Snapshot())
 
 
 def patch_memory(state):
