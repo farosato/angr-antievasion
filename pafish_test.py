@@ -1,26 +1,25 @@
 #!/usr/bin/python
 
 import angr
-import pafish_models
+import antievasion_win32api
 import logging
 import json
 from termcolor import colored
 
 # CHECK_TABLE = [
-#     ('vbox_mac', 4207476),
+#     ('username', 0x403858),
 # ]
 
 
 def test():
-    logging.getLogger('AngryPafish').setLevel(logging.INFO)
+    logging.getLogger('antievasion_win32api').setLevel(logging.INFO)
+    logging.getLogger('angr.procedures').setLevel(logging.DEBUG)
+    # logging.getLogger('angr.procedures.win32').setLevel(logging.INFO)
     # logging.getLogger().setLevel(logging.WARNING)
     # logging.getLogger('angr.project').setLevel(logging.DEBUG)
     # logging.getLogger('angr.analyses.callee_cleanup_finder').setLevel(logging.INFO)
-    # logging.getLogger('angr.procedures').setLevel(logging.DEBUG)
     # logging.getLogger("cle.loader").setLevel(logging.DEBUG)
     # logging.getLogger("angr.procedures.libc.memcmp").setLevel(logging.DEBUG)
-
-    # msvcrt.msvcrt_sim_procedures_monkey_patch()
 
     proj = angr.Project('./pafish.exe', load_options={
             'auto_load_libs': True,
@@ -40,7 +39,8 @@ def test():
     #     export_addrs = [x.rebased_addr for x in obj._exports.values() if x.forwarder is None]
     #     proj.analyses.CalleeCleanupFinder(starts=export_addrs, hook_all=True)
 
-    pafish_models.hook_all(proj)
+    # anti-evasion hooks
+    antievasion_win32api.hook_all(proj)
 
     # import IPython; IPython.embed()
 
@@ -51,12 +51,10 @@ def test():
             CHECK_TABLE = json.load(jfile)
 
     for check_name, check_addr in CHECK_TABLE:
-        print '\n### {} check ###'.format(check_name)
+        print '\n### {} check @ {} ###'.format(check_name, hex(check_addr))
 
         check_call_state = proj.factory.call_state(check_addr)
-        check_call_state.register_plugin("paranoid", pafish_models.SimStateParanoid())
-
-        pafish_models.patch_memory(check_call_state)
+        check_call_state.register_plugin("paranoid", antievasion_win32api.ParanoidPlugin())
 
         simgr = proj.factory.simulation_manager(check_call_state)
 

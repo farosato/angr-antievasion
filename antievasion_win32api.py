@@ -1,19 +1,16 @@
-import copy
-
 import angr
 import angr.engines.vex.dirty as vex_dirtyhelpers
 from angr.state_plugins.plugin import SimStatePlugin
-import claripy
-from random import randint, getrandbits
+from random import randint
+import inspect
 import logging
 
-l = logging.getLogger('AngryPafish')
+l = logging.getLogger('antievasion_win32api')
 
 TICKS_PER_MS = 10000  # Windows TicksPerMillisecond = 10000
 MALWARE_STRINGS = ['malware', 'sample', 'virus']
 VM_STRINGS = ['vm', 'hgfs', 'vbox', 'virtualbox', 'sandboxie', 'sboxie', 'wine', 'qemu', 'bochs']
-API_HOOK_CHECKS = ['DeleteFileW', 'ShellExecuteExW', 'CreateProcessA']
-WHITELISTED_MODULES = ['kernel32.dll']
+WHITELISTED_MODULES = ['advapi32.dll', 'msvcrt.dll', 'kernel32.dll']
 BLACKLISTED_MODULES = ['sbiedll.dll', 'dbghelp.dll', 'api_log.dll', 'dir_watch.dll', 'pstorec.dll', 'vmcheck.dll',
                        'wpespy.dll']
 BLACKLISTED_SYMBOLS = ['IsWow64Process', 'IsNativeVhdBoot', 'wine_get_unix_file_name']
@@ -26,14 +23,33 @@ SENSITIVE_KEYS = {
     'HARDWARE\DEVICEMAP\SCSI\SCSI PORT 2\SCSI BUS 0\TARGET ID 0\LOGICAL UNIT ID 0': {'IDENTIFIER': 'INTEL'},
 }
 
-VERBOSE = True
+
+# Auxiliary functions #
+
+def rdtsc_monkey_patch():
+    vex_dirtyhelpers.amd64g_dirtyhelper_RDTSC = rdtsc_hook
+    vex_dirtyhelpers.x86g_dirtyhelper_RDTSC = rdtsc_hook
+
+
+def hook_all(proj):
+    sim_procs = [x for x in globals().values() if inspect.isclass(x) and issubclass(x, angr.SimProcedure)]
+
+    from angr.calling_conventions import SimCCStdcall
+    for sp in sim_procs:
+        if issubclass(sp, StdcallSimProcedure):
+            proj.hook_symbol(sp.__name__, sp(cc=SimCCStdcall(proj.arch)))
+        else:
+            # use default cc for the arch (for x86 it's Cdecl)
+            proj.hook_symbol(sp.__name__, sp())
+
+    rdtsc_monkey_patch()
 
 
 # PLUGINS #
 
-class SimStateParanoid(SimStatePlugin):
+class ParanoidPlugin(SimStatePlugin):
     """
-        This state plugin keeps track of various paranoid stuff:
+        This state plugin keeps track of various paranoid stuff that may be checked during malware evasion
     """
 
     def __init__(self):
@@ -43,7 +59,7 @@ class SimStateParanoid(SimStatePlugin):
         self.open_regkeys = {}  # handle -> string id
 
     def copy(self):
-        c = SimStateParanoid()
+        c = ParanoidPlugin()
         c.tsc = self.tsc
         c.last_error = self.last_error
         c.open_regkeys = self.open_regkeys.copy()  # shallow copy should be enough (handles don't change target)
@@ -52,9 +68,53 @@ class SimStateParanoid(SimStatePlugin):
 
 # API HOOKS #
 
+class StdcallSimProcedure(angr.SimProcedure):
+    # class tag to identify SimProcedures that should be executed with the Stdcall calling convention
+    pass
+
+
 # Utilities
 
-class lstrcmpiA(angr.SimProcedure):
+class toupper(angr.SimProcedure):
+    def run(self, c):
+        self.argument_types = {
+            0: angr.sim_type.SimTypeInt(),
+        }
+
+        self.return_type = angr.sim_type.SimTypeInt()
+
+        assert not self.state.solver.symbolic(c)
+
+        import IPython; IPython.embed()
+        char_ord = self.state.solver.eval(c)
+        char = chr(char_ord)
+        ret_expr = ord(char.upper())
+        l.info('{} @ {}: {} ({}) => {} ({})'.format(
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            char_ord, char, ret_expr, chr(ret_expr)))
+        return ret_expr
+
+
+class tolower(angr.SimProcedure):
+    def run(self, c):
+        self.argument_types = {
+            0: angr.sim_type.SimTypeInt(),
+        }
+
+        self.return_type = angr.sim_type.SimTypeInt()
+
+        assert not self.state.solver.symbolic(c)
+
+        char_ord = self.state.solver.eval(c)
+        char = chr(char_ord)
+        ret_expr = ord(char.lower())
+        l.info('{} @ {}: {} ({}) => {} ({})'.format(
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            char_ord, char, ret_expr, chr(ret_expr)))
+        return ret_expr
+
+
+class lstrcmpiA(StdcallSimProcedure):
     def run(self, lpString1, lpString2):
         self.argument_types = {0: self.ty_ptr(angr.sim_type.SimTypeString()),
                                1: self.ty_ptr(angr.sim_type.SimTypeString())}
@@ -70,12 +130,12 @@ class lstrcmpiA(angr.SimProcedure):
         ret_expr = -1 if str_l1 < str_l2 else 1 if str_l1 > str_l2 else 0
 
         l.info('{} @ {}: {} ({}), {} ({}) => {}'.format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             lpString1, str1, lpString2, str2, ret_expr))
         return ret_expr
 
 
-class SetLastError(angr.SimProcedure):
+class SetLastError(StdcallSimProcedure):
     def run(self, dwErrCode):
         self.argument_types = {
             0: angr.sim_type.SimTypeInt(),
@@ -86,12 +146,12 @@ class SetLastError(angr.SimProcedure):
         self.return_type = angr.sim_type.SimTypeInt()
 
         l.info('{} @ {}: {} => void'.format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(dwErrCode)))
         return
 
 
-class GetLastError(angr.SimProcedure):
+class GetLastError(StdcallSimProcedure):
     def run(self):
         self.argument_types = {}
 
@@ -99,12 +159,12 @@ class GetLastError(angr.SimProcedure):
 
         ret_expr = self.state.paranoid.last_error
         l.info('{} @ {}: => {}'.format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(ret_expr)))
         return ret_expr
 
 
-class GetModuleHandleA(angr.SimProcedure):
+class GetModuleHandleA(StdcallSimProcedure):
     def run(self, lpModuleName):
 
         self.argument_types = {
@@ -119,17 +179,17 @@ class GetModuleHandleA(angr.SimProcedure):
         if module_name.lower() in BLACKLISTED_MODULES:
             ret_expr = 0  # NULL, i.e. module not found
         else:
-            ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.__class__.__name__, module_name), 32)
+            ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.display_name, module_name), 32)
             if module_name.lower() in WHITELISTED_MODULES:
                 self.state.solver.add(ret_expr != 0)
 
         l.info("{} @ {}: {} ({}) => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(lpModuleName), module_name, str(ret_expr)))
         return ret_expr
 
 
-class GetProcAddress(angr.SimProcedure):
+class GetProcAddress(StdcallSimProcedure):
     def run(self, hModule, lpProcName):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
@@ -149,15 +209,15 @@ class GetProcAddress(angr.SimProcedure):
             if sym_name in BLACKLISTED_SYMBOLS:
                 ret_expr = 0  # NULL, i.e. symbol not found
             else:
-                ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.__class__.__name__, sym_name), 32)
+                ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.display_name, sym_name), 32)
 
         l.info("{} @ {}: {}, {} ({}) => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(hModule), str(lpProcName), sym_name, str(ret_expr)))
         return ret_expr
 
 
-class IsWow64Process(angr.SimProcedure):
+class IsWow64Process(StdcallSimProcedure):
     def run(self, hProcess, Wow64Process):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
@@ -170,71 +230,71 @@ class IsWow64Process(angr.SimProcedure):
         self.state.memory.store(Wow64Process, self.state.solver.BVV(0, 32))  # always return FALSE
         ret_expr = 1  # success
         l.info("{} @ {}: {}, {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(hProcess), str(Wow64Process), str(ret_expr)))
         return ret_expr
 
 
-class LocalAlloc(angr.SimProcedure):
-    def run(self, uFlags, uBytes):
-        self.argument_types = {
-            0: angr.sim_type.SimTypeInt(),
-            1: angr.sim_type.SimTypeLength(),
-        }
+# class LocalAlloc(StdcallSimProcedure):
+#     def run(self, uFlags, uBytes):
+#         self.argument_types = {
+#             0: angr.sim_type.SimTypeInt(),
+#             1: angr.sim_type.SimTypeLength(),
+#         }
+#
+#         self.return_type = self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch))
+#
+#         assert not self.state.solver.symbolic(uBytes)
+#         # use malloc's simprocedure (copied and pasted)
+#         if self.state.solver.symbolic(uBytes):  # dead code for now (bc of the previous assert)
+#             size = self.state.solver.max_int(uBytes)
+#             if size > self.state.libc.max_variable_size:
+#                 size = self.state.libc.max_variable_size
+#         else:
+#             size = self.state.solver.eval(uBytes)
+#         size = self.state.solver.eval(uBytes)
+#
+#         addr = self.state.libc.heap_location
+#         self.state.libc.heap_location += size
+#
+#         # now handle flags
+#         if not self.state.solver.symbolic(uFlags):
+#             flags = self.state.solver.eval(uFlags)
+#             if flags & 0x0040:  # LMEM_ZEROINIT
+#                 self.state.memory.store(addr, self.state.solver.BVV(0, size * 8))
+#
+#         ret_expr = addr
+#         l.info("{} @ {}: {}, {} => {}".format(
+#             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+#             str(uFlags), str(uBytes), hex(ret_expr)))
+#         return ret_expr
+#
+#
+# class GlobalAlloc(LocalAlloc):
+#     pass
+#
+#
+# class LocalFree(StdcallSimProcedure):
+#     def run(self, hMem):
+#         self.argument_types = {
+#             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
+#         }
+#
+#         self.return_type = self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch))
+#
+#         # just a stub, don't really need to free anything in the libc plugin
+#         ret_expr = self.state.solver.BVS("retval_{}".format(self.display_name), 32)
+#         l.info("{} @ {}: {} => {}".format(
+#             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+#             str(hMem), str(ret_expr)))
+#         return ret_expr
+#
+#
+# class GlobalFree(LocalFree):
+#     pass
 
-        self.return_type = self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch))
 
-        assert not self.state.solver.symbolic(uBytes)
-        # use malloc's simprocedure (copied and pasted)
-        if self.state.solver.symbolic(uBytes):  # dead code for now (bc of the previous assert)
-            size = self.state.solver.max_int(uBytes)
-            if size > self.state.libc.max_variable_size:
-                size = self.state.libc.max_variable_size
-        else:
-            size = self.state.solver.eval(uBytes)
-        size = self.state.solver.eval(uBytes)
-
-        addr = self.state.libc.heap_location
-        self.state.libc.heap_location += size
-
-        # now handle flags
-        if not self.state.solver.symbolic(uFlags):
-            flags = self.state.solver.eval(uFlags)
-            if flags & 0x0040:  # LMEM_ZEROINIT
-                self.state.memory.store(addr, self.state.solver.BVV(0, size * 8))
-
-        ret_expr = addr
-        l.info("{} @ {}: {}, {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(uFlags), str(uBytes), hex(ret_expr)))
-        return ret_expr
-
-
-class GlobalAlloc(LocalAlloc):
-    pass
-
-
-class LocalFree(angr.SimProcedure):
-    def run(self, hMem):
-        self.argument_types = {
-            0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
-        }
-
-        self.return_type = self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch))
-
-        # just a stub, don't really need to free anything in the libc plugin
-        ret_expr = self.state.solver.BVS("retval_{}".format(self.__class__.__name__), 32)
-        l.info("{} @ {}: {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(hMem), str(ret_expr)))
-        return ret_expr
-
-
-class GlobalFree(LocalFree):
-    pass
-
-
-class GetFileAttributesA(angr.SimProcedure):
+class GetFileAttributesA(StdcallSimProcedure):
     def run(self, lpFileName):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeString()),
@@ -252,15 +312,15 @@ class GetFileAttributesA(angr.SimProcedure):
             ret_expr = -1  # INVALID_FILE_ATTRIBUTES, i.e. file not found
             self.state.paranoid.last_error = 0x2  # ERROR_FILE_NOT_FOUND
         else:
-            ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.__class__.__name__, file_name), 32)
+            ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.display_name, file_name), 32)
 
         l.info("{} @ {}: {} () => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(lpFileName), file_name, str(ret_expr)))
         return ret_expr
 
 
-class RegOpenKeyExA(angr.SimProcedure):
+class RegOpenKeyExA(StdcallSimProcedure):
     #
     def run(self, hKey, lpSubKey, ulOptions, samDesired, phkResult):
         self.argument_types = {
@@ -283,7 +343,7 @@ class RegOpenKeyExA(angr.SimProcedure):
         if vm_related:
             ret_expr = 2  # ERROR_FILE_NOT_FOUND
         else:
-            handle = self.state.solver.BVS("handle_{}_{}".format(self.__class__.__name__, regkey_name), 32)
+            handle = self.state.solver.BVS("handle_{}_{}".format(self.display_name, regkey_name), 32)
             if regkey_name in SENSITIVE_KEYS:
                 # common key, so we always succeed in opening it
                 self.state.memory.store(phkResult, handle, endness=self.arch.memory_endness)
@@ -299,7 +359,7 @@ class RegOpenKeyExA(angr.SimProcedure):
                 self.state.paranoid.open_regkeys[handle] = regkey_name
                 self.state.memory.store(phkResult, handle, endness=self.arch.memory_endness)
                 l.info("{} @ {}: {}, {} ({}), {}, {}, {} => {}".format(
-                    self.__class__.__name__,
+                    self.display_name,
                     self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
                     str(hKey), str(lpSubKey), regkey_name, str(ulOptions), str(samDesired), str(phkResult), 0))
                 self.ret(0)  # ERROR_SUCCESS
@@ -307,10 +367,10 @@ class RegOpenKeyExA(angr.SimProcedure):
                 # or fail
                 fail_state = old_state.copy()
                 self.state = fail_state
-                ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.__class__.__name__, regkey_name), 32)
+                ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.display_name, regkey_name), 32)
                 self.state.solver.add(ret_expr != 0)
                 l.info("{} @ {}: {}, {} ({}), {}, {}, {} => {}".format(
-                    self.__class__.__name__,
+                    self.display_name,
                     self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
                     str(hKey), str(lpSubKey), regkey_name, str(ulOptions), str(samDesired), str(phkResult), 0))
                 self.ret(ret_expr)
@@ -320,12 +380,12 @@ class RegOpenKeyExA(angr.SimProcedure):
                 return
 
         l.info("{} @ {}: {}, {} ({}), {}, {}, {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(hKey), str(lpSubKey), regkey_name, str(ulOptions), str(samDesired), str(phkResult), str(ret_expr)))
         return ret_expr
 
 
-class RegCloseKey(angr.SimProcedure):
+class RegCloseKey(StdcallSimProcedure):
     def run(self, hKey):
 
         self.argument_types = {
@@ -340,12 +400,12 @@ class RegCloseKey(angr.SimProcedure):
         ret_expr = 1  # success
 
         l.info('{} @ {}: {} => {}'.format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(hKey), ret_expr))
         return ret_expr
 
 
-class RegQueryValueExA(angr.SimProcedure):
+class RegQueryValueExA(StdcallSimProcedure):
     def run(self, hKey, lpValueName, lpReserved, lpType, lpData, lpcbData):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
@@ -380,21 +440,21 @@ class RegQueryValueExA(angr.SimProcedure):
         else:
             if self.state.solver.eval(lpData) != 0:  # i.e. not NULL
                 data = self.state.solver.BVS('value_{}_{}_{}'.format(
-                    self.__class__.__name__, regkey_name, value_name), buffer_size*8)
+                    self.display_name, regkey_name, value_name), buffer_size*8)
                 self.state.memory.store(lpData, data)
                 size = self.state.solver.BVS('size_{}_{}_{}'.format(
-                    self.__class__.__name__, regkey_name, value_name), 32)
+                    self.display_name, regkey_name, value_name), 32)
                 self.state.memory.store(lpcbData, size, endness=self.arch.memory_endness)
             ret_expr = self.state.solver.BVS('retval_{}_{}_{}'.format(
-                self.__class__.__name__, regkey_name, value_name), 32)
+                self.display_name, regkey_name, value_name), 32)
         l.info("{} @ {}: {}, {}, {}, {}, {}, {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(hKey), str(lpValueName), str(lpReserved), str(lpType),
             str(lpData) + (" ({})".format(data_str) if data_str else ""), str(lpcbData), str(ret_expr)))
         return ret_expr
 
 
-class GetCurrentProcess(angr.SimProcedure):
+class GetCurrentProcess(StdcallSimProcedure):
     def run(self, ):
         self.argument_types = {
         }
@@ -403,14 +463,14 @@ class GetCurrentProcess(angr.SimProcedure):
 
         ret_expr = -1  # special constant that is interpreted as the current process handle
         l.info("{} @ {}: => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(ret_expr)))
         return ret_expr
 
 
 # Debuggers detection
 
-class IsDebuggerPresent(angr.SimProcedure):
+class IsDebuggerPresent(StdcallSimProcedure):
     def run(self):
         self.argument_types = {}
 
@@ -418,12 +478,12 @@ class IsDebuggerPresent(angr.SimProcedure):
 
         ret_expr = 0  # always return false
         l.info("{} @ {}: => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(ret_expr)))
         return ret_expr
 
 
-class OutputDebugStringA(angr.SimProcedure):
+class OutputDebugStringA(StdcallSimProcedure):
     def run(self, lpOutputString):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeString()),
@@ -434,12 +494,12 @@ class OutputDebugStringA(angr.SimProcedure):
         self.return_type = angr.sim_type.SimTypeInt()
 
         l.info("{} @ {}: {} => void".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(lpOutputString)))
         return
 
 
-class CheckRemoteDebuggerPresent(angr.SimProcedure):
+class CheckRemoteDebuggerPresent(StdcallSimProcedure):
     def run(self, hProcess, pbDebuggerPresent):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
@@ -451,7 +511,7 @@ class CheckRemoteDebuggerPresent(angr.SimProcedure):
         self.state.memory.store(pbDebuggerPresent, self.state.solver.BVV(0, 32))  # always return FALSE
         ret_expr = 1  # success
         l.info("{} @ {}: {}, {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(hProcess), str(pbDebuggerPresent), str(ret_expr)))
         return ret_expr
 
@@ -468,7 +528,7 @@ def rdtsc_hook(state):
 
 # Generic sandbox detection
 
-class GetCursorPos(angr.SimProcedure):
+class GetCursorPos(StdcallSimProcedure):
     def run(self, lpPoint):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
@@ -483,12 +543,12 @@ class GetCursorPos(angr.SimProcedure):
         self.return_type = angr.sim_type.SimTypeInt()
         ret_expr = 1
         l.info("{} @ {}: {} ({}, {}) => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(lpPoint), x, y, str(ret_expr)))
         return ret_expr
 
 
-class GetUserNameA(angr.SimProcedure):
+class GetUserNameA(StdcallSimProcedure):
     def run(self, lpBuffer, lpnSize):
 
         self.argument_types = {
@@ -503,19 +563,19 @@ class GetUserNameA(angr.SimProcedure):
             assert not self.state.solver.symbolic(lpnSize)
             size_ptr = self.state.solver.eval(lpnSize)
             size = self.state.mem[size_ptr].int.concrete  # assuming lpcbData is not null
-            user_str = "AngryPafish"[:size - 1] + '\0'
+            user_str = "Johnny"[:size - 1] + '\0'
             user = self.state.solver.BVV(user_str)
             self.state.memory.store(lpBuffer, user)
             self.state.memory.store(lpnSize, self.state.solver.BVV(len(user_str), 32), endness=self.arch.memory_endness)
 
         ret_expr = 1
         l.info("{} @ {}: {} ({}), {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(lpBuffer), user_str, str(lpnSize), str(ret_expr)))
         return ret_expr
 
 
-class GetModuleFileNameA(angr.SimProcedure):
+class GetModuleFileNameA(StdcallSimProcedure):
     def run(self, hModule, lpFilename, nSize):
 
         self.argument_types = {
@@ -535,20 +595,20 @@ class GetModuleFileNameA(angr.SimProcedure):
             path_str = "C:\\AngryPafish"[:size - 1] + '\0'
             path = self.state.solver.BVV(path_str)
             self.state.memory.store(lpFilename, path)
-            ret_expr = len(path_str)
+            ret_expr = len(path_str) - 1  # not including terminating null
         else:
             self.state.memory.store(lpFilename,
-                                    self.state.solver.BVS("filename_{}".format(self.__class__.__name__), size * 8))
-            ret_expr = self.state.solver.BVS("retval_{}".format(self.__class__.__name__), 32)
+                                    self.state.solver.BVS("filename_{}".format(self.display_name), size * 8))
+            ret_expr = self.state.solver.BVS("retval_{}".format(self.display_name), 32)
 
         l.info("{} @ {}: {}, {}, {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(hModule), str(lpFilename) + (" ({})".format(path_str) if path_str else ""),
             str(nSize), str(ret_expr)))
         return ret_expr
 
 
-class GetLogicalDriveStringsA(angr.SimProcedure):
+class GetLogicalDriveStringsA(StdcallSimProcedure):
     def run(self, nBufferLength, lpBuffer):
 
         self.argument_types = {
@@ -569,14 +629,14 @@ class GetLogicalDriveStringsA(angr.SimProcedure):
         else:
             pass  # return the required buffer size to store it all
 
-        ret_expr = len(drives_str)
+        ret_expr = len(drives_str) - 1  # not including terminating null
         l.info("{} @ {}: {}, {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(nBufferLength), str(lpBuffer) + (" ({})".format(data) if data else ""), str(ret_expr)))
         return ret_expr
 
 
-class CreateFileA(angr.SimProcedure):
+class CreateFileA(StdcallSimProcedure):
     def run(self, lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition,
             dwFlagsAndAttributes, hTemplateFile):
 
@@ -595,7 +655,7 @@ class CreateFileA(angr.SimProcedure):
         assert not self.state.solver.symbolic(lpFileName)
         assert not self.state.solver.symbolic(dwDesiredAccess)
         file_name = self.state.mem[self.state.solver.eval(lpFileName)].string.concrete
-        ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.__class__.__name__, file_name), 32)
+        ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.display_name, file_name), 32)
 
         access = self.state.solver.eval(dwDesiredAccess)
         if access & 0x80000000:  # GENERIC_READ
@@ -607,13 +667,13 @@ class CreateFileA(angr.SimProcedure):
                 self.state.solver.add(ret_expr != -1)  # valid handle
 
         l.info("{} @ {}: {} ({}), {}, {}, {}, {}, {}, {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(lpFileName), file_name, str(dwDesiredAccess), str(dwShareMode), str(lpSecurityAttributes),
             str(dwCreationDisposition), str(dwFlagsAndAttributes), str(hTemplateFile), str(ret_expr)))
         return ret_expr
 
 
-class DeviceIoControl(angr.SimProcedure):
+class DeviceIoControl(StdcallSimProcedure):
     def run(self, hDevice, dwIoControlCode, lpInBuffer, nInBufferSize, lpOutBuffer, nOutBufferSize, lpBytesReturned,
             lpOverlapped):
 
@@ -631,7 +691,7 @@ class DeviceIoControl(angr.SimProcedure):
         self.return_type = angr.sim_type.SimTypeInt()
 
         assert not self.state.solver.symbolic(dwIoControlCode)
-        ret_expr = self.state.solver.BVS("retval_{}".format(self.__class__.__name__), 32)
+        ret_expr = self.state.solver.BVS("retval_{}".format(self.display_name), 32)
         control_code = self.state.solver.eval(dwIoControlCode)
         if self.state.solver.symbolic(hDevice) and 'PhysicalDrive0' in hDevice.args[0] and control_code == 0x7405c:
             # IOCTL_DISK_GET_LENGTH_INFO on PhysicalDrive0: return properly configured data
@@ -643,13 +703,13 @@ class DeviceIoControl(angr.SimProcedure):
             ret_expr = 1  # success
 
         l.info("{} @ {}: {}, {}, {}, {}, {}, {}, {}, {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(hDevice), str(dwIoControlCode), str(lpInBuffer), str(nInBufferSize), str(lpOutBuffer),
             str(nOutBufferSize), str(lpBytesReturned), str(lpOverlapped), str(ret_expr)))
         return ret_expr
 
 
-class GetDiskFreeSpaceExA(angr.SimProcedure):
+class GetDiskFreeSpaceExA(StdcallSimProcedure):
     def run(self, lpDirectoryName, lpFreeBytesAvailable, lpTotalNumberOfBytes, lpTotalNumberOfFreeBytes):
 
         self.argument_types = {
@@ -662,20 +722,20 @@ class GetDiskFreeSpaceExA(angr.SimProcedure):
         self.return_type = angr.sim_type.SimTypeInt()
 
         assert not self.state.solver.symbolic(lpTotalNumberOfBytes)
-        ret_expr = self.state.solver.BVS("retval_{}".format(self.__class__.__name__), 32)
+        ret_expr = self.state.solver.BVS("retval_{}".format(self.display_name), 32)
         if self.state.solver.eval(lpTotalNumberOfBytes) != 0:  # not NULL
             getlengthinfo_struct = self.state.solver.BVV(128 * 2 ** 30, 8 * 8)  # drive size = 128 GB
             self.state.memory.store(lpTotalNumberOfBytes, getlengthinfo_struct, endness=self.arch.memory_endness)
             ret_expr = 1  # success
 
         l.info("{} @ {}: {}, {}, {}, {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(lpDirectoryName), str(lpFreeBytesAvailable), str(lpTotalNumberOfBytes),
             str(lpTotalNumberOfFreeBytes), str(ret_expr)))
         return ret_expr
 
 
-class Sleep(angr.SimProcedure):
+class Sleep(StdcallSimProcedure):
     def run(self, dwMilliseconds):
         self.argument_types = {
             0: angr.sim_type.SimTypeInt(),
@@ -686,12 +746,12 @@ class Sleep(angr.SimProcedure):
         self.state.paranoid.tsc += dwMilliseconds.args[0] * TICKS_PER_MS
 
         l.info("{} @ {}: {} => void".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(dwMilliseconds)))
         return
 
 
-class GetTickCount(angr.SimProcedure):
+class GetTickCount(StdcallSimProcedure):
     def run(self, ):
         self.argument_types = {}
 
@@ -701,12 +761,12 @@ class GetTickCount(angr.SimProcedure):
 
         ret_expr = self.state.paranoid.tsc // TICKS_PER_MS
         l.info("{} @ {}: => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(ret_expr)))
         return ret_expr
 
 
-class GetSystemInfo(angr.SimProcedure):
+class GetSystemInfo(StdcallSimProcedure):
     def run(self, lpSystemInfo):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
@@ -717,7 +777,7 @@ class GetSystemInfo(angr.SimProcedure):
         sysinfo_struct = self.state.solver.BVS('SYSTEM_INFO', 36 * 8)
         self.state.memory.store(lpSystemInfo, sysinfo_struct)
         dwNumberOfProcessors = self.state.solver.BVS('dwNumberOfProcessors', 4 * 8)
-        self.state.solver.add(claripy.UGE(dwNumberOfProcessors, 2))  # dwNumberOfProcessors >= 2
+        self.state.solver.add(self.state.solver.UGE(dwNumberOfProcessors, 2))  # dwNumberOfProcessors >= 2
         self.state.memory.store(lpSystemInfo + 20, dwNumberOfProcessors)
         # Note: the value is correctly constrained, still angr doesn't seem to be aware of it.
         # This is because angr only checks satisfiability for branches that affect control flow.
@@ -726,12 +786,12 @@ class GetSystemInfo(angr.SimProcedure):
         # the branch does not affect control flow and thus the return value remains conditional.
 
         l.info("{} @ {}: {} => void".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(lpSystemInfo)))
         return
 
 
-class GlobalMemoryStatusEx(angr.SimProcedure):
+class GlobalMemoryStatusEx(StdcallSimProcedure):
     def run(self, lpBuffer):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
@@ -746,7 +806,7 @@ class GlobalMemoryStatusEx(angr.SimProcedure):
 
         ret_expr = 1
         l.info("{} @ {}: {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(lpBuffer), str(ret_expr)))
         return ret_expr
 
@@ -759,7 +819,7 @@ class GlobalMemoryStatusEx(angr.SimProcedure):
 
 # VirtualBox detection tricks
 
-class GetAdaptersAddresses(angr.SimProcedure):
+class GetAdaptersAddresses(StdcallSimProcedure):
     def run(self, Family, Flags, Reserved, AdapterAddresses, SizePointer):
 
         self.argument_types = {
@@ -798,12 +858,12 @@ class GetAdaptersAddresses(angr.SimProcedure):
             ret_expr = 0  # NO_ERROR
 
         l.info("{} @ {}: {}, {}, {}, {}, {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(Family), str(Flags), str(Reserved), str(AdapterAddresses), str(SizePointer), str(ret_expr)))
         return ret_expr
 
 
-class FindWindowA(angr.SimProcedure):
+class FindWindowA(StdcallSimProcedure):
     def run(self, lpClassName, lpWindowName):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeString()),
@@ -827,16 +887,16 @@ class FindWindowA(angr.SimProcedure):
         if vm_related_class_name or vm_related_win_name:
             ret_expr = 0  # NULL, i.e. not found
         else:
-            ret_expr = self.state.solver.BVS("retval_{}_{}_{}".format(self.__class__.__name__, class_name, win_name),
+            ret_expr = self.state.solver.BVS("retval_{}_{}_{}".format(self.display_name, class_name, win_name),
                                              32)
 
         l.info("{} @ {}: {} ({}), {} ({}) => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(lpClassName), class_name, str(lpWindowName), win_name, str(ret_expr)))
         return ret_expr
 
 
-class WNetGetProviderNameA(angr.SimProcedure):
+class WNetGetProviderNameA(StdcallSimProcedure):
     def run(self, dwNetType, lpProviderName, lpBufferSize):
         self.argument_types = {
             0: angr.sim_type.SimTypeInt(),
@@ -857,16 +917,16 @@ class WNetGetProviderNameA(angr.SimProcedure):
             ret_expr = 0  # NO_ERROR
         else:
             self.state.memory.store(lpProviderName,
-                                    self.state.solver.BVS("provider_name_{}".format(self.__class__.__name__), size * 8))
-            ret_expr = self.state.solver.BVS("retval_{}".format(self.__class__.__name__), 32)
+                                    self.state.solver.BVS("provider_name_{}".format(self.display_name), size * 8))
+            ret_expr = self.state.solver.BVS("retval_{}".format(self.display_name), 32)
 
         l.info("{} @ {}: {}, {}, {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(dwNetType), str(lpProviderName), str(lpBufferSize), str(ret_expr)))
         return ret_expr
 
 
-class CreateToolhelp32Snapshot(angr.SimProcedure):
+class CreateToolhelp32Snapshot(StdcallSimProcedure):
     def run(self, dwFlags, th32ProcessID):
         self.argument_types = {
             0: angr.sim_type.SimTypeInt(),
@@ -880,76 +940,9 @@ class CreateToolhelp32Snapshot(angr.SimProcedure):
         if flags & 0x00000002:  # TH32CS_SNAPPROCESS, to enumerate processes
             ret_expr = -1  # INVALID_HANDLE_VALUE
         else:
-            ret_expr = self.state.solver.BVS("retval_{}".format(self.__class__.__name__), 32)
+            ret_expr = self.state.solver.BVS("retval_{}".format(self.display_name), 32)
 
         l.info("{} @ {}: {}, {} => {}".format(
-            self.__class__.__name__, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(dwFlags), str(th32ProcessID), str(ret_expr)))
         return ret_expr
-
-
-# Auxiliary functions #
-
-def rdtsc_monkey_patch():
-    vex_dirtyhelpers.amd64g_dirtyhelper_RDTSC = rdtsc_hook
-    vex_dirtyhelpers.x86g_dirtyhelper_RDTSC = rdtsc_hook
-
-
-def hook_all(proj):
-    api_hooks = [
-        lstrcmpiA,
-        SetLastError,
-        GetLastError,
-        IsWow64Process,
-        LocalAlloc,
-        LocalFree,
-        GlobalAlloc,
-        GlobalFree,
-        GetFileAttributesA,
-        RegOpenKeyExA,
-        RegCloseKey,
-        RegQueryValueExA,
-        GetCurrentProcess,
-        IsDebuggerPresent,
-        OutputDebugStringA,
-        CheckRemoteDebuggerPresent,
-        GetCursorPos,
-        GetUserNameA,
-        GetModuleFileNameA,
-        GetLogicalDriveStringsA,
-        CreateFileA,
-        DeviceIoControl,
-        GetDiskFreeSpaceExA,
-        GetTickCount,
-        Sleep,
-        GetSystemInfo,
-        GlobalMemoryStatusEx,
-        GetModuleHandleA,
-        GetProcAddress,
-        GetAdaptersAddresses,
-        FindWindowA,
-        WNetGetProviderNameA,
-        CreateToolhelp32Snapshot,
-    ]
-
-    from angr.calling_conventions import SimCCStdcall
-    for sim_proc in api_hooks:
-        proj.hook_symbol(sim_proc.__name__, sim_proc(cc=SimCCStdcall(proj.arch)))
-
-    rdtsc_monkey_patch()
-
-
-def patch_memory(state):
-    # patch memory to pass number of processors checks - STUB
-    # check uses the info contained in the Win32 Thread Information Block (TIB)
-    # DON'T THINK WE CAN ACTUALLY DO THIS - SYMBOLIC INDIRECTION
-
-    # patch memory to pass hook evasion checks
-    for api in API_HOOK_CHECKS:
-        try:
-            api_code_addr = state.project.loader.find_symbol(api).rebased_addr
-            # since the memory is somehow concrete, we need to actually store a concrete value
-            # rather than constraint a symbolic one
-            state.memory.store(api_code_addr, state.solver.BVV(0x8bff, 16))
-        except (KeyError, AttributeError):  # api not imported or not resolved
-            pass
