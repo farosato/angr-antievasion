@@ -1,7 +1,11 @@
 #!/usr/bin/python
 
 import angr
-import antievasion_win32api
+# python path hack to import package angr_antievasion in sibling directory
+import os
+parentdir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.sys.path.insert(0,parentdir)
+import angr_antievasion
 import logging
 import json
 from termcolor import colored
@@ -12,7 +16,7 @@ from termcolor import colored
 
 
 def test():
-    logging.getLogger('antievasion_win32api').setLevel(logging.INFO)
+    logging.getLogger('angr_antievasion.win32_simprocs').setLevel(logging.INFO)
     logging.getLogger('angr.procedures').setLevel(logging.DEBUG)
     # logging.getLogger('angr.procedures.win32').setLevel(logging.INFO)
     # logging.getLogger().setLevel(logging.WARNING)
@@ -25,7 +29,7 @@ def test():
             'auto_load_libs': True,
             'use_system_libs': False,
             'case_insensitive': True,
-            'custom_ld_path': './windows_dlls',
+            'custom_ld_path': '../windows_dlls',
             'except_missing_libs': True,
         }
     )
@@ -40,7 +44,7 @@ def test():
     #     proj.analyses.CalleeCleanupFinder(starts=export_addrs, hook_all=True)
 
     # anti-evasion hooks
-    antievasion_win32api.hook_all(proj)
+    angr_antievasion.hook_all(proj)
 
     # import IPython; IPython.embed()
 
@@ -54,7 +58,6 @@ def test():
         print '\n### {} check @ {} ###'.format(check_name, hex(check_addr))
 
         check_call_state = proj.factory.call_state(check_addr)
-        check_call_state.register_plugin("paranoid", antievasion_win32api.ParanoidPlugin())
 
         simgr = proj.factory.simulation_manager(check_call_state)
 
@@ -79,7 +82,7 @@ def test():
             if not sim.state.solver.symbolic(ret) and sim.state.solver.eval(ret) == 0:
                 ret_str = colored(ret, 'cyan')
             print sim, "returned {}".format(ret_str)
-            import IPython; IPython.embed()
+            # import IPython; IPython.embed()
 
 
 if __name__ == '__main__':

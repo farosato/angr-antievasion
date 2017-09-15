@@ -1,11 +1,10 @@
 import angr
 import angr.engines.vex.dirty as vex_dirtyhelpers
-from angr.state_plugins.plugin import SimStatePlugin
-from random import randint
+from random import randint, getrandbits
 import inspect
 import logging
 
-l = logging.getLogger('antievasion_win32api')
+l = logging.getLogger('angr_antievasion.win32_simprocs')
 
 TICKS_PER_MS = 10000  # Windows TicksPerMillisecond = 10000
 MALWARE_STRINGS = ['malware', 'sample', 'virus']
@@ -45,27 +44,6 @@ def hook_all(proj):
     rdtsc_monkey_patch()
 
 
-# PLUGINS #
-
-class ParanoidPlugin(SimStatePlugin):
-    """
-        This state plugin keeps track of various paranoid stuff that may be checked during malware evasion
-    """
-
-    def __init__(self):
-        SimStatePlugin.__init__(self)
-        self.tsc = 50 * 1000 * 60 * TICKS_PER_MS  # init tick count ~= 50 minutes
-        self.last_error = 0  # should be thread-local, but angr does NOT currently support threads
-        self.open_regkeys = {}  # handle -> string id
-
-    def copy(self):
-        c = ParanoidPlugin()
-        c.tsc = self.tsc
-        c.last_error = self.last_error
-        c.open_regkeys = self.open_regkeys.copy()  # shallow copy should be enough (handles don't change target)
-        return c
-
-
 # API HOOKS #
 
 class StdcallSimProcedure(angr.SimProcedure):
@@ -85,7 +63,6 @@ class toupper(angr.SimProcedure):
 
         assert not self.state.solver.symbolic(c)
 
-        import IPython; IPython.embed()
         char_ord = self.state.solver.eval(c)
         char = chr(char_ord)
         ret_expr = ord(char.upper())
@@ -851,7 +828,8 @@ class GetAdaptersAddresses(StdcallSimProcedure):
             Next = AdapterAddresses + 8
             self.state.memory.store(Next, self.state.solver.BVV(0, 32))
             Description = AdapterAddresses + 36
-            lp_description = self.inline_call(LocalAlloc, 0x0040, 128).ret_expr  # allocate space for the wstring
+            global_alloc = angr.SIM_PROCEDURES['win32']['GlobalAlloc']
+            lp_description = self.inline_call(global_alloc, 0x0040, 128).ret_expr  # allocate space for the wstring
             description = self.state.solver.BVV('Intel(R) Gigabit Network Connection\0'.encode('utf-16'))  # wchar string
             self.state.memory.store(lp_description, description)
             self.state.memory.store(Description, lp_description, endness=self.arch.memory_endness)
