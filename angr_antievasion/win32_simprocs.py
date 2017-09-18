@@ -92,6 +92,9 @@ class tolower(angr.SimProcedure):
 
 
 class lstrcmpiA(StdcallSimProcedure):
+    def extract_string(self, addr):
+        return self.state.mem[addr].string.concrete
+
     def run(self, lpString1, lpString2):
         self.argument_types = {0: self.ty_ptr(angr.sim_type.SimTypeString()),
                                1: self.ty_ptr(angr.sim_type.SimTypeString())}
@@ -100,9 +103,9 @@ class lstrcmpiA(StdcallSimProcedure):
         assert not self.state.solver.symbolic(lpString1)
         assert not self.state.solver.symbolic(lpString2)
 
-        str1 = self.state.mem[self.state.solver.eval(lpString1)].string.concrete
+        str1 = self.extract_string(lpString1)
         str_l1 = str1.lower()
-        str2 = self.state.mem[self.state.solver.eval(lpString2)].string.concrete
+        str2 = self.extract_string(lpString2)
         str_l2 = str2.lower()
         ret_expr = -1 if str_l1 < str_l2 else 1 if str_l1 > str_l2 else 0
 
@@ -110,6 +113,11 @@ class lstrcmpiA(StdcallSimProcedure):
             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             lpString1, str1, lpString2, str2, ret_expr))
         return ret_expr
+
+
+class lstrcmpiW(lstrcmpiA):
+    def extract_string(self, addr):
+        return self.state.mem[addr].wstring.concrete
 
 
 class SetLastError(StdcallSimProcedure):
@@ -141,57 +149,64 @@ class GetLastError(StdcallSimProcedure):
         return ret_expr
 
 
-class GetModuleHandleA(StdcallSimProcedure):
-    def run(self, lpModuleName):
-
-        self.argument_types = {
-            0: self.ty_ptr(angr.sim_type.SimTypeString()),
-        }
-
-        self.return_type = self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch))
-
-        assert not self.state.solver.symbolic(lpModuleName)
-        module_name = self.state.mem[self.state.solver.eval(lpModuleName)].string.concrete
-
-        if module_name.lower() in BLACKLISTED_MODULES:
-            ret_expr = 0  # NULL, i.e. module not found
-        else:
-            ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.display_name, module_name), 32)
-            if module_name.lower() in WHITELISTED_MODULES:
-                self.state.solver.add(ret_expr != 0)
-
-        l.info("{} @ {}: {} ({}) => {}".format(
-            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(lpModuleName), module_name, str(ret_expr)))
-        return ret_expr
-
-
-class GetProcAddress(StdcallSimProcedure):
-    def run(self, hModule, lpProcName):
-        self.argument_types = {
-            0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
-            1: self.ty_ptr(angr.sim_type.SimTypeString())
-        }
-
-        self.return_type = self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch))
-
-        assert not self.state.solver.symbolic(lpProcName)
-
-        lpProcName_int_high = self.state.solver.eval(lpProcName) & 0xFFFF0000
-
-        if lpProcName_int_high == 0:  # ordinal import
-            assert False  # TODO: add support ordinal value
-        else:
-            sym_name = self.state.mem[self.state.solver.eval(lpProcName)].string.concrete
-            if sym_name in BLACKLISTED_SYMBOLS:
-                ret_expr = 0  # NULL, i.e. symbol not found
-            else:
-                ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.display_name, sym_name), 32)
-
-        l.info("{} @ {}: {}, {} ({}) => {}".format(
-            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(hModule), str(lpProcName), sym_name, str(ret_expr)))
-        return ret_expr
+# class GetModuleHandleA(StdcallSimProcedure):
+#     def extract_string(self, addr):
+#         return self.state.mem[addr].string.concrete
+#
+#     def run(self, lpModuleName):
+#         self.argument_types = {
+#             0: self.ty_ptr(angr.sim_type.SimTypeString()),
+#         }
+#
+#         self.return_type = self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch))
+#
+#         assert not self.state.solver.symbolic(lpModuleName)
+#         module_name = self.extract_string(lpModuleName)
+#
+#         if module_name.lower() in BLACKLISTED_MODULES:
+#             ret_expr = 0  # NULL, i.e. module not found
+#         else:
+#             ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.display_name, module_name), 32)
+#             if module_name.lower() in WHITELISTED_MODULES:
+#                 self.state.solver.add(ret_expr != 0)
+#
+#         l.info("{} @ {}: {} ({}) => {}".format(
+#             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+#             str(lpModuleName), module_name, str(ret_expr)))
+#         return ret_expr
+#
+#
+# class GetModuleHandleW(GetModuleHandleA):
+#     def extract_string(self, addr):
+#         return self.state.mem[addr].wstring.concrete
+#
+#
+# class GetProcAddress(StdcallSimProcedure):
+#     def run(self, hModule, lpProcName):
+#         self.argument_types = {
+#             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
+#             1: self.ty_ptr(angr.sim_type.SimTypeString())
+#         }
+#
+#         self.return_type = self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch))
+#
+#         assert not self.state.solver.symbolic(lpProcName)
+#
+#         lpProcName_int_high = self.state.solver.eval(lpProcName) & 0xFFFF0000
+#
+#         if lpProcName_int_high == 0:  # ordinal import
+#             assert False  # TODO: add support ordinal value
+#         else:
+#             sym_name = self.state.mem[lpProcName].string.concrete
+#             if sym_name in BLACKLISTED_SYMBOLS:
+#                 ret_expr = 0  # NULL, i.e. symbol not found
+#             else:
+#                 ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.display_name, sym_name), 32)
+#
+#         l.info("{} @ {}: {}, {} ({}) => {}".format(
+#             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+#             str(hModule), str(lpProcName), sym_name, str(ret_expr)))
+#         return ret_expr
 
 
 class IsWow64Process(StdcallSimProcedure):
@@ -272,6 +287,9 @@ class IsWow64Process(StdcallSimProcedure):
 
 
 class GetFileAttributesA(StdcallSimProcedure):
+    def extract_string(self, addr):
+        return self.state.mem[addr].string.concrete
+
     def run(self, lpFileName):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeString()),
@@ -280,7 +298,7 @@ class GetFileAttributesA(StdcallSimProcedure):
         self.return_type = angr.sim_type.SimTypeInt()
 
         assert not self.state.solver.symbolic(lpFileName)
-        file_name = self.state.mem[self.state.solver.eval(lpFileName)].string.concrete
+        file_name = self.extract_string(lpFileName)
 
         malware_related = any(mal_str in file_name.lower() for mal_str in MALWARE_STRINGS)
         vm_related = any(vm_str in file_name.lower() for vm_str in VM_STRINGS)
@@ -297,8 +315,15 @@ class GetFileAttributesA(StdcallSimProcedure):
         return ret_expr
 
 
+class GetFileAttributesW(GetFileAttributesA):
+    def extract_string(self, addr):
+        return self.state.mem[addr].wstring.concrete
+
+
 class RegOpenKeyExA(StdcallSimProcedure):
-    #
+    def extract_string(self, addr):
+        return self.state.mem[addr].string.concrete
+
     def run(self, hKey, lpSubKey, ulOptions, samDesired, phkResult):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
@@ -313,7 +338,7 @@ class RegOpenKeyExA(StdcallSimProcedure):
         assert not self.state.solver.symbolic(lpSubKey)
         assert not self.state.solver.symbolic(phkResult)
 
-        regkey_name = self.state.mem[self.state.solver.eval(lpSubKey)].string.concrete.upper()
+        regkey_name = self.extract_string(lpSubKey).upper()
 
         vm_related = any(vm_str in regkey_name.lower() for vm_str in VM_STRINGS)
 
@@ -362,6 +387,11 @@ class RegOpenKeyExA(StdcallSimProcedure):
         return ret_expr
 
 
+class RegOpenKeyExW(RegOpenKeyExA):
+    def extract_string(self, addr):
+        return self.state.mem[addr].wstring.concrete
+
+
 class RegCloseKey(StdcallSimProcedure):
     def run(self, hKey):
 
@@ -383,6 +413,12 @@ class RegCloseKey(StdcallSimProcedure):
 
 
 class RegQueryValueExA(StdcallSimProcedure):
+    def extract_string(self, addr):
+        return self.state.mem[addr].string.concrete
+
+    def get_key_value(self, regkey_name, value_name, buffer_size):
+        return SENSITIVE_KEYS[regkey_name][value_name][:buffer_size - 1] + '\0'
+
     def run(self, hKey, lpValueName, lpReserved, lpType, lpData, lpcbData):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
@@ -395,20 +431,19 @@ class RegQueryValueExA(StdcallSimProcedure):
 
         self.return_type = angr.sim_type.SimTypeLong()
 
-
         assert not self.state.solver.symbolic(lpValueName)
         assert not self.state.solver.symbolic(lpData)
         assert not self.state.solver.symbolic(lpcbData)
         assert hKey in self.state.paranoid.open_regkeys
 
         regkey_name = self.state.paranoid.open_regkeys[hKey]
-        value_name = self.state.mem[self.state.solver.eval(lpValueName)].string.concrete.upper()
+        value_name = self.extract_string(lpValueName).upper()
         buffer_size = self.state.mem[self.state.solver.eval(lpcbData)].int.concrete
         data_str = None
 
         if regkey_name in SENSITIVE_KEYS and value_name in SENSITIVE_KEYS[regkey_name]:
             if self.state.solver.eval(lpData) != 0:  # i.e. not NULL
-                data_str = SENSITIVE_KEYS[regkey_name][value_name][:buffer_size - 1] + '\0'
+                data_str = self.get_key_value(regkey_name, value_name, buffer_size)
                 data = self.state.solver.BVV(data_str)
                 self.state.memory.store(lpData, data)
                 self.state.memory.store(lpcbData, self.state.solver.BVV(len(data_str), 32),
@@ -429,6 +464,14 @@ class RegQueryValueExA(StdcallSimProcedure):
             str(hKey), str(lpValueName), str(lpReserved), str(lpType),
             str(lpData) + (" ({})".format(data_str) if data_str else ""), str(lpcbData), str(ret_expr)))
         return ret_expr
+
+
+class RegQueryValueExW(StdcallSimProcedure):
+    def extract_string(self, addr):
+        return self.state.mem[addr].wstring.concrete
+
+    def get_key_value(self, regkey_name, value_name, buffer_size):
+        return (SENSITIVE_KEYS[regkey_name][value_name][:buffer_size - 1] + '\0').encode('utf-16-le')  # wchar string
 
 
 class GetCurrentProcess(StdcallSimProcedure):
@@ -474,6 +517,10 @@ class OutputDebugStringA(StdcallSimProcedure):
             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(lpOutputString)))
         return
+
+
+class OutputDebugStringW(OutputDebugStringA):
+    pass
 
 
 class CheckRemoteDebuggerPresent(StdcallSimProcedure):
@@ -526,8 +573,10 @@ class GetCursorPos(StdcallSimProcedure):
 
 
 class GetUserNameA(StdcallSimProcedure):
-    def run(self, lpBuffer, lpnSize):
+    def get_username_string(self, size):
+        return "John"[:size - 1] + '\0'
 
+    def run(self, lpBuffer, lpnSize):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeString()),
             1: self.ty_ptr(angr.sim_type.SimTypeInt()),
@@ -538,9 +587,8 @@ class GetUserNameA(StdcallSimProcedure):
         assert not self.state.solver.symbolic(lpBuffer)
         if self.state.solver.eval(lpBuffer) != 0:  # not NULL
             assert not self.state.solver.symbolic(lpnSize)
-            size_ptr = self.state.solver.eval(lpnSize)
-            size = self.state.mem[size_ptr].int.concrete  # assuming lpcbData is not null
-            user_str = "Johnny"[:size - 1] + '\0'
+            size = self.state.mem[lpnSize].int.concrete  # assuming lpcbData is not null
+            user_str = self.get_username_string(size)
             user = self.state.solver.BVV(user_str)
             self.state.memory.store(lpBuffer, user)
             self.state.memory.store(lpnSize, self.state.solver.BVV(len(user_str), 32), endness=self.arch.memory_endness)
@@ -552,9 +600,16 @@ class GetUserNameA(StdcallSimProcedure):
         return ret_expr
 
 
-class GetModuleFileNameA(StdcallSimProcedure):
-    def run(self, hModule, lpFilename, nSize):
+class GetUserNameW(GetUserNameA):
+    def get_username_string(self, size):
+        return ("Johnny"[:size - 1] + '\0').encode('utf-16-le')
 
+
+class GetModuleFileNameA(StdcallSimProcedure):
+    def get_modulefilename_string(self, size):
+        return "C:\\installer.exe"[:size - 1] + '\0'
+
+    def run(self, hModule, lpFilename, nSize):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
             1: self.ty_ptr(angr.sim_type.SimTypeString()),
@@ -569,7 +624,9 @@ class GetModuleFileNameA(StdcallSimProcedure):
         size = self.state.solver.eval(nSize)
         path_str = None
         if self.state.solver.eval(hModule) == 0:  # NULL, retrieve path of the exe of the current process
-            path_str = "C:\\AngryPafish"[:size - 1] + '\0'
+            path_str = self.get_modulefilename_string(size)
+            import IPython; IPython.embed()
+            print 'HEEEERE: {}'.format(path_str)
             path = self.state.solver.BVV(path_str)
             self.state.memory.store(lpFilename, path)
             ret_expr = len(path_str) - 1  # not including terminating null
@@ -585,9 +642,17 @@ class GetModuleFileNameA(StdcallSimProcedure):
         return ret_expr
 
 
-class GetLogicalDriveStringsA(StdcallSimProcedure):
-    def run(self, nBufferLength, lpBuffer):
+class GetModuleFileNameW(GetModuleFileNameA):
+    def get_modulefilename_string(self, size):
+        print 'HELLOOOOOOOOOOOOOOOOOOOOOOOOOO'
+        return ("C:\\installer.exe"[:size - 1] + '\0').encode('utf-16-le')
 
+
+class GetLogicalDriveStringsA(StdcallSimProcedure):
+    def get_drive_string(self):
+        return "C:\\"
+
+    def run(self, nBufferLength, lpBuffer):
         self.argument_types = {
             0: angr.sim_type.SimTypeInt(),
             1: self.ty_ptr(angr.sim_type.SimTypeString()),
@@ -597,7 +662,7 @@ class GetLogicalDriveStringsA(StdcallSimProcedure):
 
         assert not self.state.solver.symbolic(lpBuffer)
         assert not self.state.solver.symbolic(nBufferLength)
-        drives_str = "C:\\"
+        drives_str = self.get_drive_string()
 
         data = None
         if self.state.solver.eval(nBufferLength) >= len(drives_str):  # nBufferLength does NOT include terminating null
@@ -613,10 +678,17 @@ class GetLogicalDriveStringsA(StdcallSimProcedure):
         return ret_expr
 
 
+class GetLogicalDriveStringsW(GetLogicalDriveStringsA):
+    def get_drive_string(self):
+        return "C:\\".encode('utf-16-le')
+
+
 class CreateFileA(StdcallSimProcedure):
+    def extract_string(self, addr):
+        return self.state.mem[addr].string.concrete
+
     def run(self, lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition,
             dwFlagsAndAttributes, hTemplateFile):
-
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeString()),
             1: angr.sim_type.SimTypeInt(),
@@ -631,7 +703,7 @@ class CreateFileA(StdcallSimProcedure):
 
         assert not self.state.solver.symbolic(lpFileName)
         assert not self.state.solver.symbolic(dwDesiredAccess)
-        file_name = self.state.mem[self.state.solver.eval(lpFileName)].string.concrete
+        file_name = self.extract_string(lpFileName)
         ret_expr = self.state.solver.BVS("retval_{}_{}".format(self.display_name, file_name), 32)
 
         access = self.state.solver.eval(dwDesiredAccess)
@@ -648,6 +720,11 @@ class CreateFileA(StdcallSimProcedure):
             str(lpFileName), file_name, str(dwDesiredAccess), str(dwShareMode), str(lpSecurityAttributes),
             str(dwCreationDisposition), str(dwFlagsAndAttributes), str(hTemplateFile), str(ret_expr)))
         return ret_expr
+
+
+class CreateFileW(CreateFileA):
+    def extract_string(self, addr):
+        return self.state.mem[addr].wstring.concrete
 
 
 class DeviceIoControl(StdcallSimProcedure):
@@ -688,7 +765,6 @@ class DeviceIoControl(StdcallSimProcedure):
 
 class GetDiskFreeSpaceExA(StdcallSimProcedure):
     def run(self, lpDirectoryName, lpFreeBytesAvailable, lpTotalNumberOfBytes, lpTotalNumberOfFreeBytes):
-
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeString()),
             1: self.ty_ptr(angr.sim_type.SimTypeInt()),
@@ -710,6 +786,10 @@ class GetDiskFreeSpaceExA(StdcallSimProcedure):
             str(lpDirectoryName), str(lpFreeBytesAvailable), str(lpTotalNumberOfBytes),
             str(lpTotalNumberOfFreeBytes), str(ret_expr)))
         return ret_expr
+
+
+class GetDiskFreeSpaceExW(GetDiskFreeSpaceExA):
+    pass
 
 
 class Sleep(StdcallSimProcedure):
@@ -830,7 +910,7 @@ class GetAdaptersAddresses(StdcallSimProcedure):
             Description = AdapterAddresses + 36
             global_alloc = angr.SIM_PROCEDURES['win32']['GlobalAlloc']
             lp_description = self.inline_call(global_alloc, 0x0040, 128).ret_expr  # allocate space for the wstring
-            description = self.state.solver.BVV('Intel(R) Gigabit Network Connection\0'.encode('utf-16'))  # wchar string
+            description = self.state.solver.BVV('Intel(R) Gigabit Network Connection\0'.encode('utf-16-le'))  # wchar string
             self.state.memory.store(lp_description, description)
             self.state.memory.store(Description, lp_description, endness=self.arch.memory_endness)
             ret_expr = 0  # NO_ERROR
@@ -842,6 +922,9 @@ class GetAdaptersAddresses(StdcallSimProcedure):
 
 
 class FindWindowA(StdcallSimProcedure):
+    def extract_string(self, addr):
+        return self.state.mem[addr].string.concrete
+
     def run(self, lpClassName, lpWindowName):
         self.argument_types = {
             0: self.ty_ptr(angr.sim_type.SimTypeString()),
@@ -852,14 +935,12 @@ class FindWindowA(StdcallSimProcedure):
 
         assert not self.state.solver.symbolic(lpClassName)
         assert not self.state.solver.symbolic(lpWindowName)
-        class_name_ptr = self.state.solver.eval(lpClassName)
         class_name = ''
-        if class_name_ptr != 0:
-            class_name = self.state.mem[class_name_ptr].string.concrete
-        win_name_ptr = self.state.solver.eval(lpWindowName)
+        if self.state.solver.is_true(lpClassName != 0):
+            class_name = self.extract_string(lpClassName)
         win_name = ''
-        if win_name_ptr != 0:
-            win_name = self.state.mem[win_name_ptr].string.concrete
+        if self.state.solver.is_true(lpWindowName != 0):
+            win_name = self.extract_string(lpWindowName)
         vm_related_class_name = any(vm_str in class_name.lower() for vm_str in VM_STRINGS)
         vm_related_win_name = any(vm_str in win_name.lower() for vm_str in VM_STRINGS)
         if vm_related_class_name or vm_related_win_name:
@@ -874,7 +955,15 @@ class FindWindowA(StdcallSimProcedure):
         return ret_expr
 
 
+class FindWindowW(FindWindowA):
+    def extract_string(self, addr):
+        return self.state.mem[addr].wstring.concrete
+
+
 class WNetGetProviderNameA(StdcallSimProcedure):
+    def get_provider_string(self, size):
+        return "Microsoft"[:size - 1] + '\0'
+
     def run(self, dwNetType, lpProviderName, lpBufferSize):
         self.argument_types = {
             0: angr.sim_type.SimTypeInt(),
@@ -889,7 +978,7 @@ class WNetGetProviderNameA(StdcallSimProcedure):
         assert not self.state.solver.symbolic(lpBufferSize)
         size = self.state.solver.eval(lpBufferSize)
         if self.state.solver.eval(dwNetType) == 0x00250000:  # WNNC_NET_RDR2SAMPLE, for vbox shared folders
-            name_str = "AngryPafish"[:size - 1] + '\0'
+            name_str = self.get_provider_string(size)
             name = self.state.solver.BVV(name_str)
             self.state.memory.store(lpProviderName, name)
             ret_expr = 0  # NO_ERROR
@@ -902,6 +991,11 @@ class WNetGetProviderNameA(StdcallSimProcedure):
             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(dwNetType), str(lpProviderName), str(lpBufferSize), str(ret_expr)))
         return ret_expr
+
+
+class WNetGetProviderNameA(WNetGetProviderNameA):
+    def get_provider_string(self, size):
+        return ("Microsoft"[:size - 1] + '\0').encode('utf-16-le')
 
 
 class CreateToolhelp32Snapshot(StdcallSimProcedure):
