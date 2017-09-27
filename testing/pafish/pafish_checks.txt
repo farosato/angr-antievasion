@@ -12,7 +12,7 @@ cpu_known_vm_vendors  # simuvex dirty helper for CPUID is enough
 gensandbox_mouse_act
 gensandbox_username
 gensandbox_path
-# gensandbox_common_names  # need vsnprintf SimProcedure (currently a stub)
+gensandbox_common_names  # need vsnprintf SimProcedure (currently a stub)
 gensandbox_drive_size  # hacked
 gensandbox_drive_size2  # hacked
 gensandbox_sleep_patched
@@ -26,13 +26,6 @@ gensandbox_IsNativeVhdBoot
 check_hook_DeleteFileW_m1
 check_hook_ShellExecuteExW_m1
 check_hook_CreateProcessA_m1
-
-# Sandboxie detection tricks
-sboxie_detect_sbiedll
-
-# Wine detection tricks
-wine_detect_get_unix_file_name
-wine_reg_key1
 
 # VirtualBox detection tricks
 vbox_reg_key1
@@ -59,7 +52,7 @@ vmware_reg_key2
 vmware_sysfile1
 vmware_sysfile2
 vmware_mac
-# vmware_adapter_name  # needs auxiliary string conversion functions
+vmware_adapter_name  # needs auxiliary string conversion functions
 vmware_devices
 vmware_wmi_serial  # huge overkill to implement, actually fails by itself
 
@@ -74,5 +67,12 @@ bochs_cpu_amd1  # simuvex dirty helper for CPUID is enough
 bochs_cpu_amd2  # simuvex dirty helper for CPUID is enough
 bochs_cpu_intel1  # simuvex dirty helper for CPUID is enough
 
+# Sandboxie detection tricks
+sboxie_detect_sbiedll
+
 # Cuckoo detection tricks
-#cuckoo_check_tls  # not worth it
+cuckoo_check_tls  # not worth it
+
+# Wine detection tricks
+wine_detect_get_unix_file_name
+wine_reg_key1

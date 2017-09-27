@@ -7,8 +7,8 @@ import logging
 l = logging.getLogger('angr_antievasion.win32_simprocs')
 
 TICKS_PER_MS = 10000  # Windows TicksPerMillisecond = 10000
-MALWARE_STRINGS = ['malware', 'sample', 'virus']
-VM_STRINGS = ['vm', 'hgfs', 'vbox', 'virtualbox', 'sandboxie', 'sboxie', 'wine', 'qemu', 'bochs']
+MALWARE_STRS = ['malware', 'sample', 'virus']
+ANALYSIS_STRS = ['vm', 'hgfs', 'vbox', 'virtualbox', 'sandboxie', 'sboxie', 'wine', 'qemu', 'bochs']
 WHITELISTED_MODULES = ['advapi32.dll', 'msvcrt.dll', 'kernel32.dll']
 BLACKLISTED_MODULES = ['sbiedll.dll', 'dbghelp.dll', 'api_log.dll', 'dir_watch.dll', 'pstorec.dll', 'vmcheck.dll',
                        'wpespy.dll']
@@ -22,12 +22,19 @@ SENSITIVE_KEYS = {
     'HARDWARE\DEVICEMAP\SCSI\SCSI PORT 2\SCSI BUS 0\TARGET ID 0\LOGICAL UNIT ID 0': {'IDENTIFIER': 'INTEL'},
 }
 
+default_rdtsc_helper = vex_dirtyhelpers.amd64g_dirtyhelper_RDTSC
+
 
 # Auxiliary functions #
 
 def rdtsc_monkey_patch():
     vex_dirtyhelpers.amd64g_dirtyhelper_RDTSC = rdtsc_hook
     vex_dirtyhelpers.x86g_dirtyhelper_RDTSC = rdtsc_hook
+
+
+def rdtsc_monkey_unpatch():
+    vex_dirtyhelpers.amd64g_dirtyhelper_RDTSC = default_rdtsc_helper
+    vex_dirtyhelpers.x86g_dirtyhelper_RDTSC = default_rdtsc_helper
 
 
 def hook_all(proj):
@@ -149,6 +156,34 @@ class GetLastError(StdcallSimProcedure):
         return ret_expr
 
 
+class GetModuleHandleA(StdcallSimProcedure):
+    def run(self, pointer):
+        if self.state.se.is_true(pointer == 0):
+            return self.handle(None)
+        else:
+            return self.handle(self.state.mem[pointer].string.concrete)
+
+    def handle(self, module_name):
+        if module_name is None:
+            obj = self.project.loader.main_object
+        else:
+            obj = self.project.loader.find_object(module_name)
+            if obj is None:
+                l.info('GetModuleHandle: No loaded object named "%s"', module_name)
+                return 0
+        return obj.mapped_base
+
+
+class GetModuleHandleW(GetModuleHandleA):
+    def run(self, pointer):
+        if self.state.se.is_true(pointer == 0):
+            return self.handle(None)
+        else:
+            return self.handle(self.state.mem[pointer].wstring.concrete)
+
+
+# Alternative, symbolic GetModuleHandle and GetProcAddress implementations
+#
 # class GetModuleHandleA(StdcallSimProcedure):
 #     def extract_string(self, addr):
 #         return self.state.mem[addr].string.concrete
@@ -300,10 +335,10 @@ class GetFileAttributesA(StdcallSimProcedure):
         assert not self.state.solver.symbolic(lpFileName)
         file_name = self.extract_string(lpFileName)
 
-        malware_related = any(mal_str in file_name.lower() for mal_str in MALWARE_STRINGS)
-        vm_related = any(vm_str in file_name.lower() for vm_str in VM_STRINGS)
+        malware_related = any(mal_str in file_name.lower() for mal_str in MALWARE_STRS)
+        analysis_related = any(vm_str in file_name.lower() for vm_str in ANALYSIS_STRS)
 
-        if malware_related or vm_related:
+        if malware_related or analysis_related:
             ret_expr = -1  # INVALID_FILE_ATTRIBUTES, i.e. file not found
             self.state.paranoid.last_error = 0x2  # ERROR_FILE_NOT_FOUND
         else:
@@ -340,9 +375,9 @@ class RegOpenKeyExA(StdcallSimProcedure):
 
         regkey_name = self.extract_string(lpSubKey).upper()
 
-        vm_related = any(vm_str in regkey_name.lower() for vm_str in VM_STRINGS)
+        analysis_related = any(vm_str in regkey_name.lower() for vm_str in ANALYSIS_STRS)
 
-        if vm_related:
+        if analysis_related:
             ret_expr = 2  # ERROR_FILE_NOT_FOUND
         else:
             handle = self.state.solver.BVS("handle_{}_{}".format(self.display_name, regkey_name), 32)
@@ -625,8 +660,6 @@ class GetModuleFileNameA(StdcallSimProcedure):
         path_str = None
         if self.state.solver.eval(hModule) == 0:  # NULL, retrieve path of the exe of the current process
             path_str = self.get_modulefilename_string(size)
-            import IPython; IPython.embed()
-            print 'HEEEERE: {}'.format(path_str)
             path = self.state.solver.BVV(path_str)
             self.state.memory.store(lpFilename, path)
             ret_expr = len(path_str) - 1  # not including terminating null
@@ -644,7 +677,6 @@ class GetModuleFileNameA(StdcallSimProcedure):
 
 class GetModuleFileNameW(GetModuleFileNameA):
     def get_modulefilename_string(self, size):
-        print 'HELLOOOOOOOOOOOOOOOOOOOOOOOOOO'
         return ("C:\\installer.exe"[:size - 1] + '\0').encode('utf-16-le')
 
 
@@ -665,8 +697,8 @@ class GetLogicalDriveStringsA(StdcallSimProcedure):
         drives_str = self.get_drive_string()
 
         data = None
-        if self.state.solver.eval(nBufferLength) >= len(drives_str):  # nBufferLength does NOT include terminating null
-            data = self.state.solver.BVV(drives_str + '\0')
+        if self.state.solver.is_true(nBufferLength >= len(drives_str)):  # nBufferLength does NOT include terminating null
+            data = self.state.solver.BVV(drives_str + '\0\0')  # additional null indicates end of list
             self.state.memory.store(lpBuffer, data)
         else:
             pass  # return the required buffer size to store it all
@@ -674,13 +706,45 @@ class GetLogicalDriveStringsA(StdcallSimProcedure):
         ret_expr = len(drives_str) - 1  # not including terminating null
         l.info("{} @ {}: {}, {} => {}".format(
             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            str(nBufferLength), str(lpBuffer) + (" ({})".format(data) if data else ""), str(ret_expr)))
+            str(nBufferLength), str(lpBuffer) + (" ({})".format(drives_str) if data is not None else ""), str(ret_expr)))
         return ret_expr
 
 
 class GetLogicalDriveStringsW(GetLogicalDriveStringsA):
     def get_drive_string(self):
         return "C:\\".encode('utf-16-le')
+
+
+class GetDriveTypeA(StdcallSimProcedure):
+    def extract_string(self, addr):
+        return self.state.mem[addr].string.concrete
+
+    def run(self, lpRootPathName):
+
+        self.argument_types = {
+            0: self.ty_ptr(angr.sim_type.SimTypeString()),
+        }
+
+        self.return_type = angr.sim_type.SimTypeInt()
+
+        assert not self.state.solver.symbolic(lpRootPathName)
+
+        root_str = self.state.mem[lpRootPathName].string.concrete.upper()
+        if root_str == 'C:\\':
+            ret_expr = 3  # i.e. DRIVE_FIXED
+        else:
+            ret_expr = self.state.solver.BVS("retval_{}".format(self.display_name), 32)
+            self.state.add_constraints(ret_expr >= 0)
+            self.state.add_constraints(ret_expr <= 6)
+        l.info("{} @ {}: {} ({}) => {}".format(
+            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
+            str(lpRootPathName), root_str, str(ret_expr)))
+        return ret_expr
+
+
+class GetDriveTypeW(StdcallSimProcedure):
+    def extract_string(self, addr):
+        return self.state.mem[addr].wstring.concrete
 
 
 class CreateFileA(StdcallSimProcedure):
@@ -708,8 +772,8 @@ class CreateFileA(StdcallSimProcedure):
 
         access = self.state.solver.eval(dwDesiredAccess)
         if access & 0x80000000:  # GENERIC_READ
-            vm_related = any(vm_str in file_name.lower() for vm_str in VM_STRINGS)
-            if vm_related:
+            analysis_related = any(vm_str in file_name.lower() for vm_str in ANALYSIS_STRS)
+            if analysis_related:
                 ret_expr = -1  # INVALID_HANDLE_VALUE
                 self.state.paranoid.last_error = 0x2  # ERROR_FILE_NOT_FOUND
             elif file_name == '\\\\.\\PhysicalDrive0':
@@ -800,7 +864,7 @@ class Sleep(StdcallSimProcedure):
 
         self.return_type = angr.sim_type.SimTypeInt()
 
-        self.state.paranoid.tsc += dwMilliseconds.args[0] * TICKS_PER_MS
+        self.state.paranoid.tsc += self.state.solver.eval(dwMilliseconds) * TICKS_PER_MS
 
         l.info("{} @ {}: {} => void".format(
             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
@@ -814,9 +878,11 @@ class GetTickCount(StdcallSimProcedure):
 
         self.return_type = angr.sim_type.SimTypeInt()
 
-        self.state.paranoid.tsc += TICKS_PER_MS  # increase it just to be on the safe side
-
         ret_expr = self.state.paranoid.tsc // TICKS_PER_MS
+
+        # additionally increase the tick counter to handle repeated GetTickCount calls check
+        self.state.paranoid.tsc += TICKS_PER_MS
+
         l.info("{} @ {}: => {}".format(
             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(ret_expr)))
@@ -833,14 +899,15 @@ class GetSystemInfo(StdcallSimProcedure):
 
         sysinfo_struct = self.state.solver.BVS('SYSTEM_INFO', 36 * 8)
         self.state.memory.store(lpSystemInfo, sysinfo_struct)
-        dwNumberOfProcessors = self.state.solver.BVS('dwNumberOfProcessors', 4 * 8)
-        self.state.solver.add(self.state.solver.UGE(dwNumberOfProcessors, 2))  # dwNumberOfProcessors >= 2
-        self.state.memory.store(lpSystemInfo + 20, dwNumberOfProcessors)
+        # dwNumberOfProcessors = self.state.solver.BVS('dwNumberOfProcessors', 4 * 8)
+        # self.state.solver.add(self.state.solver.UGE(dwNumberOfProcessors, 2))  # dwNumberOfProcessors >= 2
         # Note: the value is correctly constrained, still angr doesn't seem to be aware of it.
         # This is because angr only checks satisfiability for branches that affect control flow.
         # Because of the particular structure of the gensandbox_one_cpu_GetSystemInfo check,
         # i.e. return siSysInfo.dwNumberOfProcessors < 2 ? TRUE : FALSE;
         # the branch does not affect control flow and thus the return value remains conditional.
+        dwNumberOfProcessors = self.state.solver.BVV(4, 4 * 8)
+        self.state.memory.store(lpSystemInfo + 20, dwNumberOfProcessors)
 
         l.info("{} @ {}: {} => void".format(
             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
@@ -941,9 +1008,9 @@ class FindWindowA(StdcallSimProcedure):
         win_name = ''
         if self.state.solver.is_true(lpWindowName != 0):
             win_name = self.extract_string(lpWindowName)
-        vm_related_class_name = any(vm_str in class_name.lower() for vm_str in VM_STRINGS)
-        vm_related_win_name = any(vm_str in win_name.lower() for vm_str in VM_STRINGS)
-        if vm_related_class_name or vm_related_win_name:
+        analysis_related_class_name = any(vm_str in class_name.lower() for vm_str in ANALYSIS_STRS)
+        analysis_related_win_name = any(vm_str in win_name.lower() for vm_str in ANALYSIS_STRS)
+        if analysis_related_class_name or analysis_related_win_name:
             ret_expr = 0  # NULL, i.e. not found
         else:
             ret_expr = self.state.solver.BVS("retval_{}_{}_{}".format(self.display_name, class_name, win_name),

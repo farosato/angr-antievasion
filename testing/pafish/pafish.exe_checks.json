@@ -36,6 +36,10 @@
         4208956
     ], 
     [
+        "gensandbox_common_names", 
+        4209186
+    ], 
+    [
         "gensandbox_drive_size", 
         4209509
     ], 
@@ -78,18 +82,6 @@
     [
         "check_hook_CreateProcessA_m1", 
         4211431
-    ], 
-    [
-        "sboxie_detect_sbiedll", 
-        4206192
-    ], 
-    [
-        "wine_detect_get_unix_file_name", 
-        4210156
-    ], 
-    [
-        "wine_reg_key1", 
-        4210237
     ], 
     [
         "vbox_reg_key1", 
@@ -180,6 +172,10 @@
         4210531
     ], 
     [
+        "vmware_adapter_name", 
+        4210636
+    ], 
+    [
         "vmware_devices", 
         4210656
     ], 
@@ -214,5 +210,21 @@
     [
         "bochs_cpu_intel1", 
         4213494
+    ], 
+    [
+        "sboxie_detect_sbiedll", 
+        4206192
+    ], 
+    [
+        "cuckoo_check_tls", 
+        4213251
+    ], 
+    [
+        "wine_detect_get_unix_file_name", 
+        4210156
+    ], 
+    [
+        "wine_reg_key1", 
+        4210237
     ]
 ]
