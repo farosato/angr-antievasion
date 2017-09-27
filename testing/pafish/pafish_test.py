@@ -4,17 +4,15 @@ import angr
 # python path hack to import package angr_antievasion in sibling directory
 import os
 rootdir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-parentdir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.sys.path.insert(0, rootdir)
-os.sys.path.insert(0, parentdir)
 import angr_antievasion
 import logging
 import json
 from termcolor import colored
 
-CHECK_TABLE = [
-    ('vmware_adapter_name', 4210636)
-]
+# CHECK_TABLE = [
+#     ('vmware_adapter_name', 4210636)
+# ]
 
 UNAIDED_SKIP = ['vbox_mac', 'vbox_processes', 'vmware_mac', 'vmware_adapter_name']
 
@@ -33,6 +31,8 @@ def test():
         'auto_load_libs': True,
         'use_system_libs': False,
         'case_insensitive': True,
+        'custom_ld_path': '../../windows_dlls',
+        'except_missing_libs': True,
     })
 
     proj_extended = angr.Project('./pafish.exe', load_options={
@@ -57,9 +57,14 @@ def test():
     angr_antievasion.hook_all(proj_extended)
 
     # symbols for which we'd like to use the actual implementation
-    no_sim_syms = ['_vsnprintf', 'wcsstr']
+    no_sim_syms = ['_vsnprintf', 'mbstowcs', 'wcsstr']
     for sym in no_sim_syms:
+        proj_unaided.unhook_symbol(sym)
         proj_extended.unhook_symbol(sym)
+
+    # return addresses for the check call state configuration
+    ret_addr_unaided = proj_unaided.loader.extern_object.allocate()
+    ret_addr_extended = proj_extended.loader.extern_object.allocate()
 
     # import IPython; IPython.embed()
 
@@ -74,13 +79,11 @@ def test():
     for check_name, check_addr in CHECK_TABLE:
         print '\n### {} check @ {} ###'.format(check_name, hex(check_addr))
 
-        call_state_unaided = proj_unaided.factory.call_state(check_addr)
-        call_state_extended = proj_extended.factory.call_state(check_addr)
+        call_state_unaided = proj_unaided.factory.call_state(check_addr, ret_addr=ret_addr_unaided)
+        call_state_extended = proj_extended.factory.call_state(check_addr, ret_addr=ret_addr_extended)
 
         simgr_unaided = proj_unaided.factory.simulation_manager(call_state_unaided)
         simgr_extended = proj_extended.factory.simulation_manager(call_state_extended)
-
-        ret_addr = call_state_unaided.mem[call_state_unaided.regs.esp].int.concrete
 
         print '! Unaided exploration !'
         unaided_total = 0
@@ -94,7 +97,7 @@ def test():
             while len(simgr_unaided.active) > 0:
                 if check_name in UNAIDED_SKIP:
                     break
-                simgr_unaided.explore(find=ret_addr)
+                simgr_unaided.explore(find=ret_addr_unaided)
 
             print simgr_unaided
 
@@ -117,7 +120,7 @@ def test():
         angr_antievasion.rdtsc_monkey_patch()  # monkey patch is global so we need to patch and unpatch for each check
 
         while len(simgr_extended.active) > 0:
-            simgr_extended.explore(find=ret_addr)
+            simgr_extended.explore(find=ret_addr_extended)
 
         print simgr_extended
 
@@ -133,7 +136,7 @@ def test():
             # import IPython; IPython.embed()
         extended_total = len(simgr_extended.found)
 
-        import IPython; IPython.embed()
+        # import IPython; IPython.embed()
 
         latex_table.append("{} & {} & {} & {} && {} & {} & {}".format(
             check_name,
