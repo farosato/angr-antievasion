@@ -1,5 +1,5 @@
 from angr.state_plugins.plugin import SimStatePlugin
-from win32_simprocs import TICKS_PER_MS
+from win32_patches import TICKS_PER_MS
 
 
 class ParanoidPlugin(SimStatePlugin):

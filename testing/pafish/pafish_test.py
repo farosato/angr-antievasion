@@ -6,26 +6,22 @@ import os
 rootdir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.sys.path.insert(0, rootdir)
 import angr_antievasion
+import testing.utilities
 import logging
 import json
 from termcolor import colored
 
 # CHECK_TABLE = [
-#     ('vmware_adapter_name', 4210636)
+#     ('vbox_regkey9', 0x402fc7),
 # ]
 
 UNAIDED_SKIP = ['vbox_mac', 'vbox_processes', 'vmware_mac', 'vmware_adapter_name']
 
 
 def test():
-    logging.getLogger('angr_antievasion.win32_simprocs').setLevel(logging.INFO)
+    logging.getLogger('angr_antievasion').setLevel(logging.INFO)
+    logging.getLogger('testing.utilities').setLevel(logging.INFO)
     logging.getLogger('angr.procedures').setLevel(logging.DEBUG)
-    # logging.getLogger('angr.procedures.win32').setLevel(logging.INFO)
-    # logging.getLogger().setLevel(logging.WARNING)
-    # logging.getLogger('angr.project').setLevel(logging.DEBUG)
-    # logging.getLogger('angr.analyses.callee_cleanup_finder').setLevel(logging.INFO)
-    # logging.getLogger("cle.loader").setLevel(logging.DEBUG)
-    # logging.getLogger("angr.procedures.libc.memcmp").setLevel(logging.DEBUG)
 
     proj_unaided = angr.Project('./pafish.exe', load_options={
         'auto_load_libs': True,
@@ -53,14 +49,16 @@ def test():
     #     export_addrs = [x.rebased_addr for x in obj._exports.values() if x.forwarder is None]
     #     proj.analyses.CalleeCleanupFinder(starts=export_addrs, hook_all=True)
 
+    # setup testing utilities
+    # symbols for which no SimProcedure is available and is better to use the actual implementation
+    no_sim_syms = ['_vsnprintf', 'mbstowcs', 'wcsstr']
+    # snprintf is (ab)used by pafish: angr stub returns an empty string so it's useless
+    # we use the concrete implementation for the extended, and an unconstrained stub for the unaided
+    testing.setup(proj_unaided, aux_hooks=False, cdecl_stub=['_vsnprintf'], stdcall_stub=['IsWow64Process'])
+    testing.setup(proj_extended, unhook=no_sim_syms)
+
     # anti-evasion hooks
     angr_antievasion.hook_all(proj_extended)
-
-    # symbols for which we'd like to use the actual implementation
-    no_sim_syms = ['_vsnprintf', 'mbstowcs', 'wcsstr']
-    for sym in no_sim_syms:
-        proj_unaided.unhook_symbol(sym)
-        proj_extended.unhook_symbol(sym)
 
     # return addresses for the check call state configuration
     ret_addr_unaided = proj_unaided.loader.extern_object.allocate()
@@ -82,8 +80,8 @@ def test():
         call_state_unaided = proj_unaided.factory.call_state(check_addr, ret_addr=ret_addr_unaided)
         call_state_extended = proj_extended.factory.call_state(check_addr, ret_addr=ret_addr_extended)
 
-        simgr_unaided = proj_unaided.factory.simulation_manager(call_state_unaided)
-        simgr_extended = proj_extended.factory.simulation_manager(call_state_extended)
+        simgr_unaided = proj_unaided.factory.simulation_manager(call_state_unaided, save_unconstrained=True)
+        simgr_extended = proj_extended.factory.simulation_manager(call_state_extended, save_unconstrained=True)
 
         print '! Unaided exploration !'
         unaided_total = 0
@@ -108,10 +106,13 @@ def test():
                     ret_str = colored(ret, 'cyan')
                     unaided_false += 1
                 else:
+                    if sim.state.solver.symbolic(ret):
+                        unaided_false += 1  # symbolic means undetermined so add to false too
+                        unaided_total += 1
                     unaided_true += 1
                 print sim, "returned {}".format(ret_str)
                 # import IPython; IPython.embed()
-            unaided_total = len(simgr_unaided.found)
+            unaided_total += len(simgr_unaided.found)
 
         print '\n! Instrumented exploration !'
         extended_total = 0
@@ -131,12 +132,15 @@ def test():
                 ret_str = colored(ret, 'cyan')
                 extended_false += 1
             else:
+                if sim.state.solver.symbolic(ret):
+                    extended_false += 1  # symbolic means undetermined so add to false too
+                    extended_total += 1
                 extended_true += 1
             print sim, "returned {}".format(ret_str)
             # import IPython; IPython.embed()
-        extended_total = len(simgr_extended.found)
+        extended_total += len(simgr_extended.found)
 
-        # import IPython; IPython.embed()
+        import IPython; IPython.embed()
 
         latex_table.append("{} & {} & {} & {} && {} & {} & {}".format(
             check_name,

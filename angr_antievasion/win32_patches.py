@@ -1,130 +1,29 @@
 import angr
-import angr.engines.vex.dirty as vex_dirtyhelpers
 from random import randint, getrandbits
-import inspect
 import logging
 
-l = logging.getLogger('angr_antievasion.win32_simprocs')
+l = logging.getLogger('angr_antievasion.win32_patches')
 
 TICKS_PER_MS = 10000  # Windows TicksPerMillisecond = 10000
 MALWARE_STRS = ['malware', 'sample', 'virus']
 ANALYSIS_STRS = ['vm', 'hgfs', 'vbox', 'virtualbox', 'sandboxie', 'sboxie', 'wine', 'qemu', 'bochs']
-WHITELISTED_MODULES = ['advapi32.dll', 'msvcrt.dll', 'kernel32.dll']
-BLACKLISTED_MODULES = ['sbiedll.dll', 'dbghelp.dll', 'api_log.dll', 'dir_watch.dll', 'pstorec.dll', 'vmcheck.dll',
-                       'wpespy.dll']
-BLACKLISTED_SYMBOLS = ['IsWow64Process', 'IsNativeVhdBoot', 'wine_get_unix_file_name']
+# WHITELISTED_MODULES = ['advapi32.dll', 'msvcrt.dll', 'kernel32.dll']
+# BLACKLISTED_MODULES = ['sbiedll.dll', 'dbghelp.dll', 'api_log.dll', 'dir_watch.dll', 'pstorec.dll', 'vmcheck.dll',
+#                        'wpespy.dll']
+# BLACKLISTED_SYMBOLS = ['IsWow64Process', 'IsNativeVhdBoot', 'wine_get_unix_file_name']
 SENSITIVE_KEYS = {
     'HARDWARE\DESCRIPTION\SYSTEM': {'SYSTEMBIOSVERSION': '1',
                                     'VIDEOBIOSVERSION': '1',
-                                    'SYSTEMBIOSDATE': '01/01/2018'},
+                                    'SYSTEMBIOSDATE': '01/01/2015'},
     'HARDWARE\DEVICEMAP\SCSI\SCSI PORT 0\SCSI BUS 0\TARGET ID 0\LOGICAL UNIT ID 0': {'IDENTIFIER': 'INTEL'},
     'HARDWARE\DEVICEMAP\SCSI\SCSI PORT 1\SCSI BUS 0\TARGET ID 0\LOGICAL UNIT ID 0': {'IDENTIFIER': 'INTEL'},
     'HARDWARE\DEVICEMAP\SCSI\SCSI PORT 2\SCSI BUS 0\TARGET ID 0\LOGICAL UNIT ID 0': {'IDENTIFIER': 'INTEL'},
 }
 
-default_rdtsc_helper = vex_dirtyhelpers.amd64g_dirtyhelper_RDTSC
-
-
-# Auxiliary functions #
-
-def rdtsc_monkey_patch():
-    vex_dirtyhelpers.amd64g_dirtyhelper_RDTSC = rdtsc_hook
-    vex_dirtyhelpers.x86g_dirtyhelper_RDTSC = rdtsc_hook
-
-
-def rdtsc_monkey_unpatch():
-    vex_dirtyhelpers.amd64g_dirtyhelper_RDTSC = default_rdtsc_helper
-    vex_dirtyhelpers.x86g_dirtyhelper_RDTSC = default_rdtsc_helper
-
-
-def hook_all(proj):
-    sim_procs = [x for x in globals().values() if inspect.isclass(x) and issubclass(x, angr.SimProcedure)]
-
-    from angr.calling_conventions import SimCCStdcall
-    for sp in sim_procs:
-        if issubclass(sp, StdcallSimProcedure):
-            proj.hook_symbol(sp.__name__, sp(cc=SimCCStdcall(proj.arch)))
-        else:
-            # use default cc for the arch (for x86 it's Cdecl)
-            proj.hook_symbol(sp.__name__, sp())
-
-    rdtsc_monkey_patch()
-
-
-# API HOOKS #
 
 class StdcallSimProcedure(angr.SimProcedure):
     # class tag to identify SimProcedures that should be executed with the Stdcall calling convention
     pass
-
-
-# Utilities
-
-class toupper(angr.SimProcedure):
-    def run(self, c):
-        self.argument_types = {
-            0: angr.sim_type.SimTypeInt(),
-        }
-
-        self.return_type = angr.sim_type.SimTypeInt()
-
-        assert not self.state.solver.symbolic(c)
-
-        char_ord = self.state.solver.eval(c)
-        char = chr(char_ord)
-        ret_expr = ord(char.upper())
-        l.info('{} @ {}: {} ({}) => {} ({})'.format(
-            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            char_ord, char, ret_expr, chr(ret_expr)))
-        return ret_expr
-
-
-class tolower(angr.SimProcedure):
-    def run(self, c):
-        self.argument_types = {
-            0: angr.sim_type.SimTypeInt(),
-        }
-
-        self.return_type = angr.sim_type.SimTypeInt()
-
-        assert not self.state.solver.symbolic(c)
-
-        char_ord = self.state.solver.eval(c)
-        char = chr(char_ord)
-        ret_expr = ord(char.lower())
-        l.info('{} @ {}: {} ({}) => {} ({})'.format(
-            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            char_ord, char, ret_expr, chr(ret_expr)))
-        return ret_expr
-
-
-class lstrcmpiA(StdcallSimProcedure):
-    def extract_string(self, addr):
-        return self.state.mem[addr].string.concrete
-
-    def run(self, lpString1, lpString2):
-        self.argument_types = {0: self.ty_ptr(angr.sim_type.SimTypeString()),
-                               1: self.ty_ptr(angr.sim_type.SimTypeString())}
-        self.return_type = angr.sim_type.SimTypeInt(32, True)
-
-        assert not self.state.solver.symbolic(lpString1)
-        assert not self.state.solver.symbolic(lpString2)
-
-        str1 = self.extract_string(lpString1)
-        str_l1 = str1.lower()
-        str2 = self.extract_string(lpString2)
-        str_l2 = str2.lower()
-        ret_expr = -1 if str_l1 < str_l2 else 1 if str_l1 > str_l2 else 0
-
-        l.info('{} @ {}: {} ({}), {} ({}) => {}'.format(
-            self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            lpString1, str1, lpString2, str2, ret_expr))
-        return ret_expr
-
-
-class lstrcmpiW(lstrcmpiA):
-    def extract_string(self, addr):
-        return self.state.mem[addr].wstring.concrete
 
 
 class SetLastError(StdcallSimProcedure):
@@ -260,65 +159,6 @@ class IsWow64Process(StdcallSimProcedure):
             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(hProcess), str(Wow64Process), str(ret_expr)))
         return ret_expr
-
-
-# class LocalAlloc(StdcallSimProcedure):
-#     def run(self, uFlags, uBytes):
-#         self.argument_types = {
-#             0: angr.sim_type.SimTypeInt(),
-#             1: angr.sim_type.SimTypeLength(),
-#         }
-#
-#         self.return_type = self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch))
-#
-#         assert not self.state.solver.symbolic(uBytes)
-#         # use malloc's simprocedure (copied and pasted)
-#         if self.state.solver.symbolic(uBytes):  # dead code for now (bc of the previous assert)
-#             size = self.state.solver.max_int(uBytes)
-#             if size > self.state.libc.max_variable_size:
-#                 size = self.state.libc.max_variable_size
-#         else:
-#             size = self.state.solver.eval(uBytes)
-#         size = self.state.solver.eval(uBytes)
-#
-#         addr = self.state.libc.heap_location
-#         self.state.libc.heap_location += size
-#
-#         # now handle flags
-#         if not self.state.solver.symbolic(uFlags):
-#             flags = self.state.solver.eval(uFlags)
-#             if flags & 0x0040:  # LMEM_ZEROINIT
-#                 self.state.memory.store(addr, self.state.solver.BVV(0, size * 8))
-#
-#         ret_expr = addr
-#         l.info("{} @ {}: {}, {} => {}".format(
-#             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-#             str(uFlags), str(uBytes), hex(ret_expr)))
-#         return ret_expr
-#
-#
-# class GlobalAlloc(LocalAlloc):
-#     pass
-#
-#
-# class LocalFree(StdcallSimProcedure):
-#     def run(self, hMem):
-#         self.argument_types = {
-#             0: self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch)),
-#         }
-#
-#         self.return_type = self.ty_ptr(angr.sim_type.SimTypeTop(self.state.arch))
-#
-#         # just a stub, don't really need to free anything in the libc plugin
-#         ret_expr = self.state.solver.BVS("retval_{}".format(self.display_name), 32)
-#         l.info("{} @ {}: {} => {}".format(
-#             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-#             str(hMem), str(ret_expr)))
-#         return ret_expr
-#
-#
-# class GlobalFree(LocalFree):
-#     pass
 
 
 class GetFileAttributesA(StdcallSimProcedure):
@@ -573,16 +413,6 @@ class CheckRemoteDebuggerPresent(StdcallSimProcedure):
             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
             str(hProcess), str(pbDebuggerPresent), str(ret_expr)))
         return ret_expr
-
-
-# CPU information based detection
-
-def rdtsc_hook(state):
-    state.paranoid.tsc += 500  # magic number (pafish detects if consecutive runs diff is between 0 and 750)
-    return state.solver.BVV(state.paranoid.tsc, 64), []
-
-
-# CPUID based detection tricks don't need any handling (angr.dirty helper emulates a real cpu info)
 
 
 # Generic sandbox detection
