@@ -15,7 +15,8 @@ from termcolor import colored
 #     ('vbox_regkey9', 0x402fc7),
 # ]
 
-UNAIDED_SKIP = ['vbox_mac', 'vbox_processes', 'vmware_mac', 'vmware_adapter_name']
+UNAIDED_SKIP = ['vbox_mac', 'vbox_processes', 'vmware_mac', 'vmware_adapter_name',
+                'vbox_reg_key9', 'vbox_sysfile2', 'vmware_reg_key1']
 
 
 def test():
@@ -50,11 +51,11 @@ def test():
     #     proj.analyses.CalleeCleanupFinder(starts=export_addrs, hook_all=True)
 
     # setup testing utilities
-    # symbols for which no SimProcedure is available and is better to use the actual implementation
-    no_sim_syms = ['_vsnprintf', 'mbstowcs', 'wcsstr']
+    # symbols for which no SimProcedure is available and/or is better to use the actual implementation
+    no_sim_syms = ['_vsnprintf', 'mbstowcs', 'wcsstr', 'toupper', 'tolower', 'lstrcmpiA', 'lstrcmpiW']
     # snprintf is (ab)used by pafish: angr stub returns an empty string so it's useless
     # we use the concrete implementation for the extended, and an unconstrained stub for the unaided
-    testing.setup(proj_unaided, aux_hooks=False, cdecl_stub=['_vsnprintf'], stdcall_stub=['IsWow64Process'])
+    testing.setup(proj_unaided, cdecl_stub=['_vsnprintf'], stdcall_stub=['IsWow64Process'])
     testing.setup(proj_extended, unhook=no_sim_syms)
 
     # anti-evasion hooks

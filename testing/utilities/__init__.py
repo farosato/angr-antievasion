@@ -15,7 +15,7 @@ def _hook_all_aux(proj):
             proj.hook_symbol(sp.__name__, sp())
 
 
-def setup(proj, aux_hooks=True, unhook=[], cdecl_stub=[], stdcall_stub=[]):
+def setup(proj, aux_hooks=False, unhook=[], cdecl_stub=[], stdcall_stub=[]):
     if aux_hooks:
         _hook_all_aux(proj)
 

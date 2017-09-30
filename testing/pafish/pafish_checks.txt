@@ -46,7 +46,7 @@ vbox_network_share
 vbox_processes  # hacked
 vbox_wmi_devices  # huge overkill to implement, actually fails by itself
 
- VMWare detection tricks
+# VMWare detection tricks
 vmware_reg_key1
 vmware_reg_key2
 vmware_sysfile1
