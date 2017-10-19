@@ -11,9 +11,9 @@ import logging
 import json
 from termcolor import colored
 
-# CHECK_TABLE = [
-#     ('vbox_regkey9', 0x402fc7),
-# ]
+CHECK_TABLE = [
+    ('vbox_regkey9', 4209898),
+]
 
 UNAIDED_SKIP = ['vbox_mac', 'vbox_processes', 'vmware_mac', 'vmware_adapter_name',
                 'vbox_reg_key9', 'vbox_sysfile2', 'vmware_reg_key1']

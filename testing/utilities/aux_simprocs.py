@@ -11,39 +11,29 @@ l = logging.getLogger("testing.utilities")
 
 class toupper(angr.SimProcedure):
     def run(self, c):
-        self.argument_types = {
-            0: angr.sim_type.SimTypeInt(),
-        }
+        self.argument_types = {0: angr.sim_type.SimTypeInt(self.state.arch, True)}
+        self.return_type = angr.sim_type.SimTypeInt(self.state.arch, True)
 
-        self.return_type = angr.sim_type.SimTypeInt()
-
-        assert not self.state.solver.symbolic(c)
-
-        char_ord = self.state.solver.eval(c)
-        char = chr(char_ord)
-        ret_expr = ord(char.upper())
-        l.info('{} @ {}: {} ({}) => {} ({})'.format(
+        ret_expr = self.state.solver.If(
+            self.state.solver.And(c >= 97, c <= 122),  # a - z
+            c - 32, c)
+        l.info('{} @ {}: {} => {}'.format(
             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            char_ord, char, ret_expr, chr(ret_expr)))
+            c, ret_expr))
         return ret_expr
 
 
 class tolower(angr.SimProcedure):
     def run(self, c):
-        self.argument_types = {
-            0: angr.sim_type.SimTypeInt(),
-        }
+        self.argument_types = {0: angr.sim_type.SimTypeInt(self.state.arch, True)}
+        self.return_type = angr.sim_type.SimTypeInt(self.state.arch, True)
 
-        self.return_type = angr.sim_type.SimTypeInt()
-
-        assert not self.state.solver.symbolic(c)
-
-        char_ord = self.state.solver.eval(c)
-        char = chr(char_ord)
-        ret_expr = ord(char.lower())
-        l.info('{} @ {}: {} ({}) => {} ({})'.format(
+        ret_expr = self.state.solver.If(
+            self.state.solver.And(c >= 65, c <= 90),  # A - Z
+            c + 32, c)
+        l.info('{} @ {}: {} => {}'.format(
             self.display_name, self.state.memory.load(self.state.regs.esp, 4, endness=self.arch.memory_endness),
-            char_ord, char, ret_expr, chr(ret_expr)))
+            c, ret_expr))
         return ret_expr
 
 

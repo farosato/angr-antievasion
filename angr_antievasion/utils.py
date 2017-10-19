@@ -3,6 +3,7 @@ import angr.engines.vex.dirty as vex_dirtyhelpers
 import inspect
 import cpu_instr_patches
 import win32_patches
+from stdcall_simproc import StdcallSimProcedure
 from angr.calling_conventions import SimCCStdcall
 
 default_rdtsc_helper = vex_dirtyhelpers.amd64g_dirtyhelper_RDTSC
@@ -24,7 +25,7 @@ def hook_all(proj):
     sim_procs = [x for x in win32_patches.__dict__.values() if inspect.isclass(x) and issubclass(x, angr.SimProcedure)]
 
     for sp in sim_procs:
-        if issubclass(sp, win32_patches.StdcallSimProcedure):
+        if issubclass(sp, StdcallSimProcedure):
             proj.hook_symbol(sp.__name__, sp(cc=SimCCStdcall(proj.arch)))
         else:
             # use default cc for the arch (for x86 it's Cdecl)

@@ -1,4 +1,5 @@
 import angr
+from stdcall_simproc import StdcallSimProcedure
 from random import randint, getrandbits
 import logging
 
@@ -19,11 +20,6 @@ SENSITIVE_KEYS = {
     'HARDWARE\DEVICEMAP\SCSI\SCSI PORT 1\SCSI BUS 0\TARGET ID 0\LOGICAL UNIT ID 0': {'IDENTIFIER': 'INTEL'},
     'HARDWARE\DEVICEMAP\SCSI\SCSI PORT 2\SCSI BUS 0\TARGET ID 0\LOGICAL UNIT ID 0': {'IDENTIFIER': 'INTEL'},
 }
-
-
-class StdcallSimProcedure(angr.SimProcedure):
-    # class tag to identify SimProcedures that should be executed with the Stdcall calling convention
-    pass
 
 
 class SetLastError(StdcallSimProcedure):
