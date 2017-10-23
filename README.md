@@ -2,7 +2,7 @@
 
 An extension for the [angr](http://angr.io/) open source binary analysis and symbolic execution framework.
 
-The extension mainly consists of a set of Win32 API patches for the angr framework that constrain the symbolic exploration in order to automatically pass common **evasive** checks.
+The extension mainly consists of a set of Win32 API patches for the angr framework that constrain the symbolic exploration in order to automatically pass common _**evasive**_ checks.
 
 This tool was originally developed as part of the **Master's Thesis** of the author.  
 The original release is available under the *thesis* tag.
