@@ -1,8 +1,9 @@
-# AngryPafish
+# angr-antievasion
 
+An extension for the [angr](http://angr.io/) open source binary analysis and symbolic execution framework.
 
-## Notes
+The extension mainly consists of a set of Win32 API patches for the angr framework that constrain the symbolic exploration in order to automatically pass common **evasive** checks.
 
-* Compile the binary **without** stripping symbols from it (i.e. remove -s flag from makefile). This makes analysis simpler and check-table auto-generation possible (with the script).
+This tool was originally developed as part of the Master's Thesis of the author. The original release of the code along with all the relevant material is available under the *thesis* branch.
 
-* *msvcrt.dll* (i.e. C standard library) loading is practically necessary, since angr libc simprocedures do not cover the entire library (e.g. toupper, tolower not modelled).
+The main ideas behind this tool are described in the thesis [Symbolic Execution of Malicious Software: Countering Sandbox Evasion Techniques](https://github.com/fabros/angr-antievasion/blob/master/thesis/msc_thesis.pdf).
